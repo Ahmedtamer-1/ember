@@ -1,0 +1,2436 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ember Chrome</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --tab-anim-duration: 180ms;
+    --tab-anim-ease: cubic-bezier(0.2, 0, 0, 1);
+    --tab-max-width: 240px;
+    --tab-min-width: 36px;
+    --tab-width: 240px;
+    --tab-content-width: 240px;
+    --accent: #0067c0;
+    --tab-strip-base: #dee1e6;
+    --tab-strip-bg: color-mix(in srgb, var(--accent) 12%, var(--tab-strip-base));
+    --tab-inactive-bg: transparent;
+    --tab-hover-bg: rgba(255, 255, 255, 0.55);
+    --tab-active-bg: #ffffff;
+    --toolbar-bg: #ffffff;
+    --toolbar-border: #dadce0;
+    --omnibox-bg: #f1f3f4;
+    --omnibox-focus-bg: #ffffff;
+    --text-primary: #202124;
+    --text-secondary: #5f6368;
+    --btn-hover: rgba(60, 64, 67, 0.08);
+    --btn-active: rgba(60, 64, 67, 0.14);
+    --divider: rgba(60, 64, 67, 0.22);
+    --badge-on-bg: #e6f4ea;
+    --badge-on-text: #137333;
+    --badge-off-bg: #fce8e6;
+    --badge-off-text: #c5221f;
+    --snap-bg: #f8f9fa;
+    --snap-zone-bg: rgba(60, 64, 67, 0.08);
+    --snap-zone-border: rgba(60, 64, 67, 0.28);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --accent: #60cdff;
+      --tab-strip-base: #1f2023;
+      --tab-strip-bg: color-mix(in srgb, var(--accent) 14%, var(--tab-strip-base));
+      --tab-inactive-bg: transparent;
+      --tab-hover-bg: rgba(255, 255, 255, 0.08);
+      --tab-active-bg: #323639;
+      --toolbar-bg: #323639;
+      --toolbar-border: #3c4043;
+      --omnibox-bg: #202124;
+      --omnibox-focus-bg: #202124;
+      --text-primary: #e8eaed;
+      --text-secondary: #9aa0a6;
+      --btn-hover: rgba(232, 234, 237, 0.08);
+      --btn-active: rgba(232, 234, 237, 0.14);
+      --divider: rgba(232, 234, 237, 0.2);
+      --badge-on-bg: rgba(129, 201, 149, 0.16);
+      --badge-on-text: #81c995;
+      --badge-off-bg: rgba(242, 139, 130, 0.16);
+      --badge-off-text: #f28b82;
+      --snap-bg: #292a2d;
+      --snap-zone-bg: rgba(255, 255, 255, 0.07);
+      --snap-zone-border: rgba(255, 255, 255, 0.26);
+    }
+  }
+
+  html[data-theme="dark"] {
+    --tab-strip-base: #1f2023;
+    --tab-strip-bg: color-mix(in srgb, var(--accent) 14%, var(--tab-strip-base));
+    --tab-inactive-bg: transparent;
+    --tab-hover-bg: rgba(255, 255, 255, 0.08);
+    --tab-active-bg: #323639;
+    --toolbar-bg: #323639;
+    --toolbar-border: #3c4043;
+    --omnibox-bg: #202124;
+    --omnibox-focus-bg: #202124;
+    --text-primary: #e8eaed;
+    --text-secondary: #9aa0a6;
+    --btn-hover: rgba(232, 234, 237, 0.08);
+    --btn-active: rgba(232, 234, 237, 0.14);
+    --divider: rgba(232, 234, 237, 0.2);
+    --badge-on-bg: rgba(129, 201, 149, 0.16);
+    --badge-on-text: #81c995;
+    --badge-off-bg: rgba(242, 139, 130, 0.16);
+    --badge-off-text: #f28b82;
+    --snap-bg: #292a2d;
+    --snap-zone-bg: rgba(255, 255, 255, 0.07);
+    --snap-zone-border: rgba(255, 255, 255, 0.26);
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+    font-size: 13px;
+    color: var(--text-primary);
+    background: var(--toolbar-bg);
+  }
+
+  .chrome-shell {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 84px;
+  }
+
+  /* Integrated Title Bar + Tab Strip (38px) */
+  .tab-strip {
+    display: flex;
+    align-items: flex-end;
+    height: 38px;
+    padding: 6px 0 0 8px;
+    background: var(--tab-strip-bg);
+    gap: 2px;
+    overflow: hidden;
+  }
+
+  .tabs-container {
+    display: flex;
+    align-items: flex-end;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: calc(100% - 240px);
+    height: 32px;
+    gap: 2px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-behavior: smooth;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .tab-strip.has-scroll-buttons .tabs-container {
+    max-width: calc(100% - 284px);
+  }
+
+  .tabs-container::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Reduced motion preference and disabled animations setting */
+  @media (prefers-reduced-motion: reduce) {
+    :root {
+      --tab-anim-duration: 0ms !important;
+    }
+    .tab,
+    .tab-inner,
+    .tab-title,
+    .tab-close,
+    .tabs-container {
+      transition-duration: 0ms !important;
+    }
+  }
+
+  html[data-reduced-motion="true"] {
+    --tab-anim-duration: 0ms !important;
+  }
+
+  html[data-reduced-motion="true"] .tab,
+  html[data-reduced-motion="true"] .tab-inner,
+  html[data-reduced-motion="true"] .tab-title,
+  html[data-reduced-motion="true"] .tab-close,
+  html[data-reduced-motion="true"] .tabs-container {
+    transition-duration: 0ms !important;
+  }
+
+  /* Rapid window drag resize: disable transitions to eliminate rubber-banding/lag */
+  .tabs-container.no-tab-transitions .tab,
+  .tabs-container.no-tab-transitions .tab-inner,
+  .tabs-container.no-tab-transitions .tab-title,
+  .tabs-container.no-tab-transitions .tab-close {
+    transition: none !important;
+  }
+
+  .tab {
+    position: relative;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    height: 32px;
+    width: var(--tab-width, 240px);
+    min-width: 0;
+    max-width: var(--tab-max-width, 240px);
+    flex-shrink: 0;
+    padding: 0;
+    margin: 0;
+    border-radius: 8px 8px 0 0;
+    background: var(--tab-inactive-bg);
+    color: var(--text-secondary);
+    cursor: default;
+    overflow: hidden;
+    transform: translate3d(calc(var(--drag-x, 0px) + var(--tab-shift-x, 0px) + var(--flip-x, 0px)), 0, 0);
+    transition: width var(--tab-anim-duration) var(--tab-anim-ease),
+                opacity var(--tab-anim-duration) var(--tab-anim-ease),
+                transform var(--tab-anim-duration) var(--tab-anim-ease),
+                background-color 0.12s ease;
+  }
+
+  /* Dynamic will-change: applied only while actively animating to prevent compositor memory bloat */
+  .tab.animating {
+    will-change: transform, width, opacity;
+  }
+
+  /* Actively dragged tab: glued to cursor with 0 transition, elevated */
+  .tab.dragging {
+    transition: none !important;
+    z-index: 100 !important;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.24);
+    background: var(--tab-active-bg) !important;
+    color: var(--text-primary) !important;
+    cursor: grabbing !important;
+    touch-action: none;
+  }
+
+  /* Dropping into target slot animates smoothly */
+  .tab.drag-dropping {
+    transition: transform var(--tab-anim-duration) var(--tab-anim-ease) !important;
+    z-index: 99 !important;
+    pointer-events: none !important;
+  }
+
+  .tab-inner {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: var(--tab-content-width, 240px);
+    min-width: var(--tab-content-width, 240px);
+    display: flex;
+    align-items: center;
+    padding: 0 8px 0 12px;
+    gap: 8px;
+    box-sizing: border-box;
+    pointer-events: auto;
+  }
+
+  .tab:hover {
+    background: var(--tab-hover-bg);
+  }
+
+  .tab.active {
+    background: var(--tab-active-bg);
+    color: var(--text-primary);
+    z-index: 2;
+  }
+
+  .tab.suspended {
+    opacity: 0.68;
+  }
+
+  .tab.drag-over {
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+
+  .tab.active::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 8px;
+    right: 8px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+
+  .tab:not(.active)::after {
+    content: "";
+    position: absolute;
+    right: 0;
+    top: 7px;
+    height: 16px;
+    width: 1px;
+    background: var(--divider);
+  }
+
+  .tab.active::after,
+  .tab:hover::after {
+    display: none;
+  }
+
+  /* Progressive content hiding as tabs narrow */
+  .tab-title {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 12px;
+    line-height: 16px;
+    opacity: var(--tab-title-opacity, 1);
+    transition: opacity var(--tab-anim-duration) ease;
+  }
+
+  /* When title has faded completely, hide from layout */
+  .tab[data-title-hidden="true"] .tab-title {
+    opacity: 0 !important;
+    pointer-events: none !important;
+    max-width: 0 !important;
+    flex: 0 !important;
+  }
+
+  /* When tabs shrink below 52px, hide close button on inactive tabs */
+  .tab[data-micro="true"]:not(.active) .tab-close {
+    opacity: 0 !important;
+    pointer-events: none !important;
+    display: none !important;
+  }
+
+  /* Active tab ALWAYS keeps its close button visible */
+  .tab.active .tab-close {
+    opacity: 1 !important;
+    display: flex !important;
+    pointer-events: auto !important;
+  }
+
+  /* Active micro tab layout: favicon and close button fit neatly */
+  .tab.active[data-micro="true"] .tab-inner {
+    justify-content: space-between;
+    padding: 0 4px 0 6px;
+  }
+
+  /* Closing tab animation state */
+  .tab.tab-closing {
+    width: 0px !important;
+    opacity: 0 !important;
+    margin-right: -2px !important;
+    pointer-events: none !important;
+  }
+
+  .tab.tab-closing::before,
+  .tab.tab-closing::after {
+    display: none !important;
+  }
+
+  .tab-icon {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+  }
+
+  .tab.active .tab-icon {
+    color: var(--accent);
+  }
+
+  .tab-favicon {
+    width: 14px;
+    height: 14px;
+    object-fit: contain;
+    border-radius: 2px;
+  }
+
+  .spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--divider);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .tab-close {
+    width: 18px;
+    height: 18px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: opacity var(--tab-anim-duration) ease, background-color 0.1s ease;
+  }
+
+  .tab-close:hover {
+    background: var(--btn-active);
+    color: var(--text-primary);
+  }
+
+  .tab-scroll-btn {
+    width: 20px;
+    height: 28px;
+    margin-bottom: 2px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-secondary);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: opacity 0.12s ease, background-color 0.1s ease;
+    z-index: 4;
+  }
+
+  .tab-scroll-btn:hover {
+    background: var(--btn-hover);
+    color: var(--text-primary);
+  }
+
+  .tab-scroll-btn:active {
+    background: var(--btn-active);
+  }
+
+  .tab-scroll-btn[disabled] {
+    opacity: 0.25;
+    cursor: default;
+    pointer-events: none;
+  }
+
+  .tab-scroll-btn svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .new-tab-btn {
+    width: 28px;
+    height: 28px;
+    margin-bottom: 2px;
+    margin-left: 2px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .new-tab-btn:hover {
+    background: var(--btn-hover);
+    color: var(--text-primary);
+  }
+
+  .new-tab-btn:active {
+    background: var(--btn-active);
+  }
+
+  /* Draggable empty space on the integrated titlebar/tab-strip */
+  .titlebar-drag-space {
+    flex: 1 1 48px;
+    min-width: 36px;
+    height: 38px;
+    margin-top: -6px;
+  }
+
+  /* Windows 11 Caption Controls (Minimize, Maximize/Restore, Close) */
+  .window-controls {
+    display: flex;
+    align-items: stretch;
+    height: 38px;
+    margin-top: -6px;
+    flex-shrink: 0;
+  }
+
+  .win-btn {
+    width: 46px;
+    height: 38px;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background-color 0.1s ease, color 0.1s ease;
+  }
+
+  .win-btn:hover {
+    background: var(--btn-hover);
+  }
+
+  .win-btn:active {
+    background: var(--btn-active);
+  }
+
+  .win-btn.win-close:hover {
+    background: #c42b1c;
+    color: #ffffff;
+  }
+
+  .win-btn.win-close:active {
+    background: #b12417;
+    color: #ffffff;
+  }
+
+  .win-btn svg {
+    width: 10px;
+    height: 10px;
+  }
+
+  /* Windows 11 Snap Layouts Flyout */
+  .snap-flyout {
+    position: absolute;
+    top: 38px;
+    right: 8px;
+    height: 42px;
+    padding: 5px 8px;
+    border-radius: 8px;
+    background: var(--snap-bg);
+    border: 1px solid var(--toolbar-border);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+    display: none;
+    align-items: center;
+    gap: 8px;
+    z-index: 50;
+  }
+
+  .snap-flyout.visible {
+    display: flex;
+  }
+
+  .snap-group {
+    display: grid;
+    width: 48px;
+    height: 30px;
+    gap: 2px;
+  }
+
+  .snap-group.split-50-50 {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .snap-group.split-65-35 {
+    grid-template-columns: 1.85fr 1fr;
+  }
+
+  .snap-group.split-thirds {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+
+  .snap-group.split-quads {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+  }
+
+  .snap-zone {
+    border-radius: 3px;
+    background: var(--snap-zone-bg);
+    border: 1px solid var(--snap-zone-border);
+    cursor: pointer;
+    transition: background-color 0.1s ease, border-color 0.1s ease;
+  }
+
+  .snap-zone:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  /* Toolbar (46px) */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    height: 46px;
+    padding: 0 8px;
+    background: var(--toolbar-bg);
+    border-bottom: 1px solid var(--toolbar-border);
+    gap: 4px;
+  }
+
+  .nav-btn {
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .nav-btn:hover:not(:disabled) {
+    background: var(--btn-hover);
+  }
+
+  .nav-btn:active:not(:disabled) {
+    background: var(--btn-active);
+  }
+
+  .nav-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  .omnibox-wrapper {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    height: 32px;
+    margin: 0 4px;
+    padding: 0 12px;
+    border-radius: 16px;
+    background: var(--omnibox-bg);
+    border: 1.5px solid transparent;
+    transition: border-color 0.12s ease, background-color 0.12s ease;
+    gap: 8px;
+  }
+
+  .omnibox-wrapper:focus-within {
+    background: var(--omnibox-focus-bg);
+    border-color: var(--accent);
+  }
+
+  .omnibox-icon {
+    width: 14px;
+    height: 14px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .omnibox-input {
+    flex: 1;
+    height: 100%;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  /* Inline quick menu drawer inside toolbar */
+  .menu-drawer {
+    display: none;
+    align-items: center;
+    gap: 4px;
+    padding-left: 4px;
+    border-left: 1px solid var(--toolbar-border);
+  }
+
+  .menu-drawer.open {
+    display: flex;
+  }
+
+  .menu-chip {
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--toolbar-border);
+    border-radius: 13px;
+    background: var(--omnibox-bg);
+    color: var(--text-primary);
+    font-size: 11.5px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .menu-chip:hover {
+    background: var(--btn-hover);
+  }
+
+  .menu-chip.adblock-on {
+    background: var(--badge-on-bg);
+    color: var(--badge-on-text);
+    border-color: transparent;
+  }
+
+  .menu-chip.adblock-off {
+    background: var(--badge-off-bg);
+    color: var(--badge-off-text);
+    border-color: transparent;
+  }
+
+  .shield-btn {
+    height: 28px;
+    padding: 0 9px;
+    border: 1px solid transparent;
+    border-radius: 14px;
+    background: var(--badge-on-bg);
+    color: var(--badge-on-text);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    transition: background-color 0.12s ease, opacity 0.12s ease;
+  }
+
+  .shield-btn:hover {
+    filter: brightness(0.96);
+  }
+
+  .shield-btn.shield-off {
+    background: var(--badge-off-bg);
+    color: var(--badge-off-text);
+  }
+
+  .shield-badge {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .omnibox-action-btn {
+    height: 22px;
+    min-width: 22px;
+    padding: 0 6px;
+    border: none;
+    border-radius: 11px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .omnibox-action-btn:hover {
+    background: var(--btn-hover);
+    color: var(--text-primary);
+  }
+
+  .omnibox-action-btn.bookmarked {
+    color: #f59e0b;
+  }
+
+  .zoom-pill {
+    display: none;
+    background: var(--btn-hover);
+    color: var(--text-primary);
+  }
+
+  .zoom-pill.visible {
+    display: inline-flex;
+  }
+
+  .find-bar {
+    display: none;
+    align-items: center;
+    height: 30px;
+    padding: 0 8px;
+    border-radius: 15px;
+    background: var(--omnibox-bg);
+    border: 1px solid var(--toolbar-border);
+    gap: 5px;
+    flex-shrink: 0;
+  }
+
+  .find-bar.open {
+    display: flex;
+  }
+
+  .find-input {
+    width: 120px;
+    height: 100%;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 12px;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  .find-count {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    padding: 0 3px;
+  }
+
+  .find-mini-btn {
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .find-mini-btn:hover {
+    background: var(--btn-hover);
+    color: var(--text-primary);
+  }
+
+  .downloads-pill {
+    display: none;
+    height: 28px;
+    padding: 0 9px;
+    border: 1px solid var(--toolbar-border);
+    border-radius: 14px;
+    background: var(--omnibox-bg);
+    color: var(--text-primary);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+  }
+
+  .downloads-pill.visible {
+    display: inline-flex;
+  }
+
+  svg {
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+  }
+</style>
+</head>
+<body>
+  <div class="chrome-shell">
+    <div id="tab-strip" class="tab-strip">
+      <button id="tab-scroll-left" class="tab-scroll-btn" title="Scroll tabs left" aria-label="Scroll tabs left">
+        <svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+      </button>
+      <div id="tabs-container" class="tabs-container"></div>
+      <button id="tab-scroll-right" class="tab-scroll-btn" title="Scroll tabs right" aria-label="Scroll tabs right">
+        <svg viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+      </button>
+      <button id="new-tab-btn" class="new-tab-btn" title="New tab (Ctrl+T)" aria-label="New tab">
+        <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+      </button>
+      <div id="titlebar-drag-space" class="titlebar-drag-space"></div>
+      <div class="window-controls">
+        <button id="win-min-btn" class="win-btn" title="Minimize" aria-label="Minimize">
+          <svg viewBox="0 0 10 10"><path d="M0 5h10v1H0z"/></svg>
+        </button>
+        <button id="win-max-btn" class="win-btn" title="Maximize (hover for Snap Layouts)" aria-label="Maximize">
+          <svg id="win-max-icon" viewBox="0 0 10 10"><path d="M1 1v8h8V1H1zm7 7H2V2h6v6z"/></svg>
+        </button>
+        <button id="win-close-btn" class="win-btn win-close" title="Close" aria-label="Close">
+          <svg viewBox="0 0 10 10"><path d="M10 0.7L9.3 0 5 4.3 0.7 0 0 0.7 4.3 5 0 9.3 0.7 10 5 5.7 9.3 10 10 9.3 5.7 5z"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Windows 11 Snap Layouts Flyout -->
+    <div id="snap-flyout" class="snap-flyout" aria-label="Snap Layouts">
+      <div class="snap-group split-50-50">
+        <div class="snap-zone" data-snap="left_half" title="Snap Left Half"></div>
+        <div class="snap-zone" data-snap="right_half" title="Snap Right Half"></div>
+      </div>
+      <div class="snap-group split-65-35">
+        <div class="snap-zone" data-snap="left_two_thirds" title="Snap Left Two-Thirds"></div>
+        <div class="snap-zone" data-snap="right_one_third" title="Snap Right One-Third"></div>
+      </div>
+      <div class="snap-group split-thirds">
+        <div class="snap-zone" data-snap="left_third" title="Snap Left Third"></div>
+        <div class="snap-zone" data-snap="center_third" title="Snap Center Third"></div>
+        <div class="snap-zone" data-snap="right_third" title="Snap Right Third"></div>
+      </div>
+      <div class="snap-group split-quads">
+        <div class="snap-zone" data-snap="top_left" title="Snap Top-Left Quadrant"></div>
+        <div class="snap-zone" data-snap="top_right" title="Snap Top-Right Quadrant"></div>
+        <div class="snap-zone" data-snap="bottom_left" title="Snap Bottom-Left Quadrant"></div>
+        <div class="snap-zone" data-snap="bottom_right" title="Snap Bottom-Right Quadrant"></div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <button id="back-btn" class="nav-btn" title="Click to go back" aria-label="Back">
+        <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+      </button>
+      <button id="forward-btn" class="nav-btn" title="Click to go forward" aria-label="Forward">
+        <svg viewBox="0 0 24 24"><path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/></svg>
+      </button>
+      <button id="reload-btn" class="nav-btn" title="Reload this page" aria-label="Reload">
+        <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+      </button>
+
+      <div class="omnibox-wrapper">
+        <span class="omnibox-icon" title="Site information">
+          <svg viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+        </span>
+        <input
+          id="omnibox"
+          class="omnibox-input"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder="Search or type URL"
+        />
+        <button id="zoom-pill" class="omnibox-action-btn zoom-pill" title="Click to reset zoom to 100% (Ctrl+0)">100%</button>
+        <button id="bookmark-btn" class="omnibox-action-btn" title="Bookmark this page (Ctrl+D)" aria-label="Bookmark">☆</button>
+      </div>
+
+      <div id="find-bar" class="find-bar" aria-label="Find in page">
+        <input id="find-input" class="find-input" type="text" placeholder="Find in page..." autocomplete="off" />
+        <span id="find-count" class="find-count">0/0</span>
+        <button id="find-prev-btn" class="find-mini-btn" title="Previous match (Shift+Enter)">▲</button>
+        <button id="find-next-btn" class="find-mini-btn" title="Next match (Enter)">▼</button>
+        <button id="find-close-btn" class="find-mini-btn" title="Close find bar (Esc)">✕</button>
+      </div>
+
+      <button id="downloads-btn" class="downloads-pill" title="Downloads">
+        <span>⬇</span>
+        <span id="downloads-label">0</span>
+      </button>
+
+      <button
+        id="shield-btn"
+        class="shield-btn"
+        title="Ember Shield — Click to toggle adblocking for this site (right-click for global toggle)"
+        aria-label="Adblock Shield"
+      >
+        <svg viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>
+        <span id="shield-badge" class="shield-badge">0</span>
+      </button>
+
+      <div id="menu-drawer" class="menu-drawer">
+        <button id="bookmarks-chip" class="menu-chip" title="Open Bookmarks (ember://bookmarks)">★ Bookmarks</button>
+        <button id="history-chip" class="menu-chip" title="Open History (ember://history)">⏱ History</button>
+        <button id="find-chip" class="menu-chip" title="Find in page (Ctrl+F)">Find</button>
+        <button id="duplicate-chip" class="menu-chip" title="Duplicate current tab (or right-click any tab)">Duplicate</button>
+        <button id="reopen-chip" class="menu-chip" title="Reopen closed tab (Ctrl+Shift+T)">Reopen Tab</button>
+        <button id="home-chip" class="menu-chip" title="Go to New Tab page">New Tab</button>
+        <button id="settings-chip" class="menu-chip" title="Open Settings (ember://settings)">&#9881; Settings</button>
+        <button id="adblock-chip" class="menu-chip adblock-on" title="Toggle global adblocker">Global Shield: ON</button>
+      </div>
+
+      <button id="menu-btn" class="nav-btn" title="Customize and control Ember" aria-label="Menu">
+        <svg viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const GLOBE_SVG = '<svg viewBox="0 0 24 24" style="width:13px;height:13px"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>';
+
+      const tabStrip = document.getElementById("tab-strip");
+      const tabScrollLeft = document.getElementById("tab-scroll-left");
+      const tabsContainer = document.getElementById("tabs-container");
+      const tabScrollRight = document.getElementById("tab-scroll-right");
+      const newTabBtn = document.getElementById("new-tab-btn");
+      const winMinBtn = document.getElementById("win-min-btn");
+      const winMaxBtn = document.getElementById("win-max-btn");
+      const winMaxIcon = document.getElementById("win-max-icon");
+      const winCloseBtn = document.getElementById("win-close-btn");
+      const snapFlyout = document.getElementById("snap-flyout");
+      const backBtn = document.getElementById("back-btn");
+      const forwardBtn = document.getElementById("forward-btn");
+      const reloadBtn = document.getElementById("reload-btn");
+      const omnibox = document.getElementById("omnibox");
+      const zoomPill = document.getElementById("zoom-pill");
+      const bookmarkBtn = document.getElementById("bookmark-btn");
+      const findBar = document.getElementById("find-bar");
+      const findInput = document.getElementById("find-input");
+      const findCount = document.getElementById("find-count");
+      const findPrevBtn = document.getElementById("find-prev-btn");
+      const findNextBtn = document.getElementById("find-next-btn");
+      const findCloseBtn = document.getElementById("find-close-btn");
+      const downloadsBtn = document.getElementById("downloads-btn");
+      const downloadsLabel = document.getElementById("downloads-label");
+      const shieldBtn = document.getElementById("shield-btn");
+      const shieldBadge = document.getElementById("shield-badge");
+      const menuBtn = document.getElementById("menu-btn");
+      const menuDrawer = document.getElementById("menu-drawer");
+      const bookmarksChip = document.getElementById("bookmarks-chip");
+      const historyChip = document.getElementById("history-chip");
+      const findChip = document.getElementById("find-chip");
+      const duplicateChip = document.getElementById("duplicate-chip");
+      const reopenChip = document.getElementById("reopen-chip");
+      const homeChip = document.getElementById("home-chip");
+      const settingsChip = document.getElementById("settings-chip");
+      const adblockChip = document.getElementById("adblock-chip");
+
+      let currentState = {
+        activeTabId: 0,
+        tabAnimationsEnabled: true,
+        adblockEnabled: true,
+        activeSiteAllowlisted: false,
+        activeBookmarked: false,
+        activeZoomPercent: 100,
+        findOpen: false,
+        findActive: 0,
+        findTotal: 0,
+        downloadsCount: 0,
+        downloadsActive: 0,
+        latestDownloadText: "",
+        recentlyClosedCount: 0,
+        isMaximized: false,
+        theme: "light",
+        accentColor: "#0067c0",
+        tabs: []
+      };
+
+      let draggedTabId = null;
+      let snapShowTimer = null;
+      let snapHideTimer = null;
+
+      function sendIpc(msg) {
+        if (window.ipc && typeof window.ipc.postMessage === "function") {
+          window.ipc.postMessage(msg);
+        }
+      }
+
+      // Window dragging & double-click maximize on empty tab-strip space
+      tabStrip.addEventListener("mousedown", function (e) {
+        if (e.button !== 0) return;
+        if (
+          e.target.closest(".tab") ||
+          e.target.closest(".new-tab-btn") ||
+          e.target.closest(".window-controls")
+        ) {
+          return;
+        }
+        if (e.detail === 2) {
+          sendIpc("window_toggle_maximize");
+        } else {
+          sendIpc("window_drag");
+        }
+      });
+
+      winMinBtn.addEventListener("click", function () {
+        sendIpc("window_minimize");
+      });
+
+      winMaxBtn.addEventListener("click", function () {
+        snapFlyout.classList.remove("visible");
+        sendIpc("window_toggle_maximize");
+      });
+
+      winCloseBtn.addEventListener("click", function () {
+        sendIpc("window_close");
+      });
+
+      // Windows 11 Snap Layouts hover flyout on Maximize button
+      winMaxBtn.addEventListener("mouseenter", function () {
+        clearTimeout(snapHideTimer);
+        snapShowTimer = setTimeout(function () {
+          snapFlyout.classList.add("visible");
+        }, 280);
+      });
+
+      winMaxBtn.addEventListener("mouseleave", function () {
+        clearTimeout(snapShowTimer);
+        snapHideTimer = setTimeout(function () {
+          snapFlyout.classList.remove("visible");
+        }, 220);
+      });
+
+      snapFlyout.addEventListener("mouseenter", function () {
+        clearTimeout(snapHideTimer);
+      });
+
+      snapFlyout.addEventListener("mouseleave", function () {
+        snapHideTimer = setTimeout(function () {
+          snapFlyout.classList.remove("visible");
+        }, 180);
+      });
+
+      snapFlyout.addEventListener("click", function (e) {
+        const zoneEl = e.target.closest(".snap-zone");
+        if (zoneEl && zoneEl.dataset.snap) {
+          snapFlyout.classList.remove("visible");
+          sendIpc("window_snap:" + zoneEl.dataset.snap);
+        }
+      });
+
+      newTabBtn.addEventListener("click", function () {
+        isMouseClosing = false;
+        lockedTabWidth = null;
+        sendIpc("new_tab");
+      });
+
+      backBtn.addEventListener("click", function () {
+        sendIpc("back");
+      });
+
+      forwardBtn.addEventListener("click", function () {
+        sendIpc("forward");
+      });
+
+      reloadBtn.addEventListener("click", function () {
+        sendIpc("reload");
+      });
+
+      zoomPill.addEventListener("click", function () {
+        sendIpc("zoom_reset");
+      });
+
+      bookmarkBtn.addEventListener("click", function () {
+        sendIpc("toggle_bookmark");
+      });
+
+      findInput.addEventListener("input", function () {
+        sendIpc("find_query:" + findInput.value);
+      });
+
+      findInput.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          if (e.shiftKey) {
+            sendIpc("find_prev:" + findInput.value);
+          } else {
+            sendIpc("find_next:" + findInput.value);
+          }
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          findBar.classList.remove("open");
+          sendIpc("find_close");
+        }
+      });
+
+      findPrevBtn.addEventListener("click", function () {
+        sendIpc("find_prev:" + findInput.value);
+      });
+
+      findNextBtn.addEventListener("click", function () {
+        sendIpc("find_next:" + findInput.value);
+      });
+
+      findCloseBtn.addEventListener("click", function () {
+        findBar.classList.remove("open");
+        sendIpc("find_close");
+      });
+
+      downloadsBtn.addEventListener("click", function () {
+        sendIpc("downloads_clear");
+      });
+
+      menuBtn.addEventListener("click", function () {
+        menuDrawer.classList.toggle("open");
+      });
+
+      bookmarksChip.addEventListener("click", function () {
+        sendIpc("navigate:ember://bookmarks");
+        menuDrawer.classList.remove("open");
+      });
+
+      historyChip.addEventListener("click", function () {
+        sendIpc("navigate:ember://history");
+        menuDrawer.classList.remove("open");
+      });
+
+      findChip.addEventListener("click", function () {
+        menuDrawer.classList.remove("open");
+        window.__emberOpenFind();
+      });
+
+      duplicateChip.addEventListener("click", function () {
+        if (currentState.activeTabId) {
+          sendIpc("duplicate_tab:" + currentState.activeTabId);
+        }
+        menuDrawer.classList.remove("open");
+      });
+
+      reopenChip.addEventListener("click", function () {
+        sendIpc("reopen_closed_tab");
+        menuDrawer.classList.remove("open");
+      });
+
+      homeChip.addEventListener("click", function () {
+        sendIpc("home");
+        menuDrawer.classList.remove("open");
+      });
+
+      settingsChip.addEventListener("click", function () {
+        sendIpc("navigate:ember://settings");
+        menuDrawer.classList.remove("open");
+      });
+
+      adblockChip.addEventListener("click", function () {
+        sendIpc("toggle_adblock");
+      });
+
+      shieldBtn.addEventListener("click", function () {
+        sendIpc("toggle_site_allowlist");
+      });
+
+      shieldBtn.addEventListener("contextmenu", function (e) {
+        e.preventDefault();
+        sendIpc("toggle_adblock");
+      });
+
+      omnibox.addEventListener("focus", function () {
+        omnibox.select();
+      });
+
+      omnibox.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const val = omnibox.value.trim();
+          if (val.length > 0) {
+            sendIpc("navigate:" + val);
+            omnibox.blur();
+          }
+        } else if (e.key === "Escape") {
+          const active = currentState.tabs.find(function (t) {
+            return t.id === currentState.activeTabId;
+          });
+          if (active) {
+            omnibox.value = active.url === "ember://newtab" ? "" : active.url;
+          }
+          omnibox.blur();
+        }
+      });
+
+      window.addEventListener("keydown", function (e) {
+        const key = (e.key || "").toLowerCase();
+        const mod = e.ctrlKey || e.metaKey;
+
+        if (e.altKey && !mod && !e.shiftKey) {
+          if (e.key === "ArrowLeft") {
+            e.preventDefault();
+            sendIpc("back");
+            return;
+          } else if (e.key === "ArrowRight") {
+            e.preventDefault();
+            sendIpc("forward");
+            return;
+          }
+        }
+
+        if (e.key === "F5") {
+          e.preventDefault();
+          sendIpc("reload");
+          return;
+        }
+
+        if (!mod) return;
+
+        if (e.key === "Tab") {
+          e.preventDefault();
+          sendIpc(e.shiftKey ? "prev_tab" : "next_tab");
+        } else if (e.shiftKey && key === "t") {
+          e.preventDefault();
+          sendIpc("reopen_closed_tab");
+        } else if (!e.shiftKey && key === "t") {
+          e.preventDefault();
+          isMouseClosing = false;
+          lockedTabWidth = null;
+          sendIpc("new_tab");
+        } else if (!e.shiftKey && key === "w") {
+          e.preventDefault();
+          if (currentState.activeTabId) {
+            closeTabOptimistically(currentState.activeTabId, false);
+          }
+        } else if (!e.shiftKey && key === "r") {
+          e.preventDefault();
+          sendIpc("reload");
+        } else if (!e.shiftKey && key === "l") {
+          e.preventDefault();
+          omnibox.focus();
+          omnibox.select();
+        } else if (!e.shiftKey && key === "d") {
+          e.preventDefault();
+          sendIpc("toggle_bookmark");
+        } else if (!e.shiftKey && key === "f") {
+          e.preventDefault();
+          window.__emberOpenFind();
+        } else if (e.key === "+" || e.key === "=") {
+          e.preventDefault();
+          sendIpc("zoom_in");
+        } else if (e.key === "-" || e.key === "_") {
+          e.preventDefault();
+          sendIpc("zoom_out");
+        } else if (e.key === "0") {
+          e.preventDefault();
+          sendIpc("zoom_reset");
+        } else if (!e.shiftKey && e.key >= "1" && e.key <= "9") {
+          e.preventDefault();
+          sendIpc("switch_tab_index:" + e.key);
+        }
+      });
+
+      function updateMaximizeIcon(isMaximized) {
+        if (isMaximized) {
+          winMaxBtn.title = "Restore down (hover for Snap Layouts)";
+          winMaxIcon.innerHTML = '<path d="M3 1v2H1v6h6V7h2V1H3zm3 7H2V4h4v4zm2-2H7V3H4V2h4v4z"/>';
+        } else {
+          winMaxBtn.title = "Maximize (hover for Snap Layouts)";
+          winMaxIcon.innerHTML = '<path d="M1 1v8h8V1H1zm7 7H2V2h6v6z"/>';
+        }
+      }
+
+      const TAB_ANIM_DURATION = 180;
+      const TAB_MAX_WIDTH = 240;
+      const TAB_MIN_WIDTH = 36;
+      const TAB_GAP = 2;
+
+      function computeTabWidth(tabCount, stripWidth) {
+        if (tabCount <= 0) return TAB_MAX_WIDTH;
+        const available = stripWidth - (tabCount - 1) * TAB_GAP;
+        const rawWidth = Math.floor(available / tabCount);
+        return Math.max(TAB_MIN_WIDTH, Math.min(TAB_MAX_WIDTH, rawWidth));
+      }
+
+      function computeTitleOpacity(tabWidth) {
+        if (tabWidth <= 75) return 0;
+        if (tabWidth >= 130) return 1;
+        return Math.round(((tabWidth - 75) / (130 - 75)) * 100) / 100;
+      }
+
+      function getAvailableStripWidth() {
+        const winControls = document.querySelector(".window-controls");
+        const winControlsWidth = winControls ? winControls.offsetWidth : 140;
+        const dragSpace = document.querySelector(".titlebar-drag-space");
+        const dragSpaceMin = dragSpace ? (parseInt(getComputedStyle(dragSpace).flexBasis, 10) || 48) : 48;
+        const newTab = document.getElementById("new-tab-btn");
+        const newTabWidth = newTab ? newTab.offsetWidth + 4 : 34;
+        const baseReserved = winControlsWidth + dragSpaceMin + newTabWidth + 20;
+        const availableBase = Math.max(120, tabStrip.clientWidth - baseReserved);
+        const tabCount = currentState && currentState.tabs ? currentState.tabs.length : 1;
+        const wouldOverflow = tabCount * (TAB_MIN_WIDTH + TAB_GAP) > availableBase;
+        const reserved = baseReserved + (wouldOverflow ? 48 : 0);
+        return Math.max(120, tabStrip.clientWidth - reserved);
+      }
+
+      function updateScrollButtons() {
+        if (!tabsContainer || !tabScrollLeft || !tabScrollRight) return;
+        const winControls = document.querySelector(".window-controls");
+        const winControlsWidth = winControls ? winControls.offsetWidth : 140;
+        const dragSpace = document.querySelector(".titlebar-drag-space");
+        const dragSpaceMin = dragSpace ? (parseInt(getComputedStyle(dragSpace).flexBasis, 10) || 48) : 48;
+        const newTab = document.getElementById("new-tab-btn");
+        const newTabWidth = newTab ? newTab.offsetWidth + 4 : 34;
+        const baseReserved = winControlsWidth + dragSpaceMin + newTabWidth + 20;
+        const availableBase = Math.max(120, tabStrip.clientWidth - baseReserved);
+
+        const tabCount = currentState && currentState.tabs ? currentState.tabs.length : 1;
+        const isOverflowing = (tabCount * (TAB_MIN_WIDTH + TAB_GAP) > availableBase) ||
+                              (tabsContainer.scrollWidth > availableBase + 8);
+
+        if (!isOverflowing) {
+          tabStrip.classList.remove("has-scroll-buttons");
+          tabScrollLeft.style.display = "none";
+          tabScrollRight.style.display = "none";
+          return;
+        }
+
+        tabStrip.classList.add("has-scroll-buttons");
+        tabScrollLeft.style.display = "flex";
+        tabScrollRight.style.display = "flex";
+
+        const atStart = tabsContainer.scrollLeft <= 2;
+        const atEnd = tabsContainer.scrollLeft >= tabsContainer.scrollWidth - tabsContainer.clientWidth - 4;
+
+        if (atStart) {
+          tabScrollLeft.setAttribute("disabled", "true");
+        } else {
+          tabScrollLeft.removeAttribute("disabled");
+        }
+
+        if (atEnd) {
+          tabScrollRight.setAttribute("disabled", "true");
+        } else {
+          tabScrollRight.removeAttribute("disabled");
+        }
+      }
+
+      function scrollActiveTabIntoView() {
+        if (!tabsContainer) return;
+        const activeTab = tabsContainer.querySelector(".tab.active");
+        if (activeTab) {
+          activeTab.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+        }
+      }
+
+      function renderTabIcon(iconSpan, tab) {
+        iconSpan.textContent = "";
+        if (tab.loading) {
+          const spinner = document.createElement("span");
+          spinner.className = "spinner";
+          iconSpan.appendChild(spinner);
+        } else if (tab.favicon) {
+          const img = document.createElement("img");
+          img.className = "tab-favicon";
+          img.src = tab.favicon;
+          img.alt = "";
+          img.addEventListener("error", function () {
+            iconSpan.innerHTML = GLOBE_SVG;
+          });
+          iconSpan.appendChild(img);
+        } else {
+          iconSpan.innerHTML = GLOBE_SVG;
+        }
+      }
+
+      const closingTabIds = new Set();
+      let isMouseClosing = false;
+      let lockedTabWidth = null;
+
+      function closeTabOptimistically(tabId, isMouse) {
+        if (closingTabIds.has(tabId)) return;
+        closingTabIds.add(tabId);
+
+        const tabEl = tabsContainer.querySelector('.tab[data-tab-id="' + tabId + '"]');
+
+        if (isMouse) {
+          isMouseClosing = true;
+          if (lockedTabWidth === null && tabEl) {
+            const rect = tabEl.getBoundingClientRect();
+            lockedTabWidth = Math.round(rect.width);
+          }
+        } else {
+          isMouseClosing = false;
+          lockedTabWidth = null;
+        }
+
+        sendIpc("close_tab:" + tabId);
+
+        if (!tabEl) return;
+
+        // Optimistically transfer active focus to neighbouring tab immediately
+        if (tabEl.classList.contains("active")) {
+          tabEl.classList.remove("active");
+          let nextActiveTab = null;
+          let sibling = tabEl.nextElementSibling;
+          while (sibling) {
+            if (sibling.classList.contains("tab") && !sibling.classList.contains("tab-closing")) {
+              nextActiveTab = sibling;
+              break;
+            }
+            sibling = sibling.nextElementSibling;
+          }
+          if (!nextActiveTab) {
+            sibling = tabEl.previousElementSibling;
+            while (sibling) {
+              if (sibling.classList.contains("tab") && !sibling.classList.contains("tab-closing")) {
+                nextActiveTab = sibling;
+                break;
+              }
+              sibling = sibling.previousElementSibling;
+            }
+          }
+          if (nextActiveTab) {
+            nextActiveTab.classList.add("active");
+            const nextId = parseInt(nextActiveTab.dataset.tabId, 10);
+            if (currentState && currentState.tabs) {
+              const nextTabInfo = currentState.tabs.find(function (t) { return t.id === nextId; });
+              if (nextTabInfo) {
+                omnibox.value = nextTabInfo.url === "ember://newtab" ? "" : nextTabInfo.url;
+              }
+            }
+          }
+        }
+
+        if (activeDrag && activeDrag.tabId === tabId) {
+          stopAutoScroll();
+          if (activeDrag.tabEl && activeDrag.tabEl.hasPointerCapture && activeDrag.tabEl.hasPointerCapture(activeDrag.pointerId)) {
+            try { activeDrag.tabEl.releasePointerCapture(activeDrag.pointerId); } catch (_) {}
+          }
+          const allTabs = tabsContainer.querySelectorAll(".tab");
+          allTabs.forEach(function (el) {
+            el.classList.remove("dragging", "drag-dropping", "animating");
+            el.style.removeProperty("--drag-x");
+            el.style.removeProperty("--tab-shift-x");
+          });
+          activeDrag = null;
+        }
+
+        tabEl.classList.add("tab-closing", "animating");
+        tabEl.style.pointerEvents = "none";
+        tabEl.draggable = false;
+        tabEl.style.width = "0px";
+        tabEl.style.opacity = "0";
+
+        let cleanedUp = false;
+        function cleanup() {
+          if (cleanedUp) return;
+          cleanedUp = true;
+          tabEl.removeEventListener("transitionend", onEnd);
+          if (tabEl.parentNode) {
+            tabEl.remove();
+          }
+          closingTabIds.delete(tabId);
+        }
+
+        function onEnd(e) {
+          if (e.propertyName === "width" || e.propertyName === "opacity") {
+            cleanup();
+          }
+        }
+
+        tabEl.addEventListener("transitionend", onEnd);
+        setTimeout(cleanup, TAB_ANIM_DURATION + 60);
+      }
+
+      let activeDrag = null;
+      let autoScrollRaf = null;
+      let autoScrollSpeed = 0;
+
+      function stopAutoScroll() {
+        if (autoScrollRaf !== null) {
+          cancelAnimationFrame(autoScrollRaf);
+          autoScrollRaf = null;
+        }
+        autoScrollSpeed = 0;
+      }
+
+      function updateDragPositions() {
+        if (!activeDrag || !activeDrag.isDragging || !activeDrag.tabEl) return;
+        const currentScrollLeft = tabsContainer.scrollLeft;
+        const dx = (activeDrag.currentClientX - activeDrag.startX) + (currentScrollLeft - activeDrag.initialScrollLeft);
+        activeDrag.tabEl.style.setProperty("--drag-x", dx + "px");
+
+        const slotWidth = activeDrag.slotWidth;
+        const rawOffset = dx / slotWidth;
+        const indexDelta = Math.round(rawOffset);
+        const newSlotIndex = Math.max(0, Math.min(activeDrag.tabCount - 1, activeDrag.originIndex + indexDelta));
+
+        if (newSlotIndex !== activeDrag.currentIndex) {
+          activeDrag.currentIndex = newSlotIndex;
+          const allTabs = Array.from(tabsContainer.querySelectorAll(".tab:not(.tab-closing)"));
+          allTabs.forEach(function (tabEl, idx) {
+            if (tabEl === activeDrag.tabEl) return;
+            tabEl.classList.add("animating");
+            if (newSlotIndex > activeDrag.originIndex) {
+              if (idx > activeDrag.originIndex && idx <= newSlotIndex) {
+                tabEl.style.setProperty("--tab-shift-x", (-slotWidth) + "px");
+              } else {
+                tabEl.style.setProperty("--tab-shift-x", "0px");
+              }
+            } else if (newSlotIndex < activeDrag.originIndex) {
+              if (idx >= newSlotIndex && idx < activeDrag.originIndex) {
+                tabEl.style.setProperty("--tab-shift-x", (+slotWidth) + "px");
+              } else {
+                tabEl.style.setProperty("--tab-shift-x", "0px");
+              }
+            } else {
+              tabEl.style.setProperty("--tab-shift-x", "0px");
+            }
+          });
+        }
+
+        // Auto-scroll near edges when strip overflows
+        if (tabsContainer.scrollWidth > tabsContainer.clientWidth + 4) {
+          const containerRect = tabsContainer.getBoundingClientRect();
+          if (activeDrag.currentClientX < containerRect.left + 36) {
+            const proximity = containerRect.left + 36 - activeDrag.currentClientX;
+            autoScrollSpeed = -Math.min(12, Math.max(2, proximity * 0.35));
+            startAutoScroll();
+          } else if (activeDrag.currentClientX > containerRect.right - 36) {
+            const proximity = activeDrag.currentClientX - (containerRect.right - 36);
+            autoScrollSpeed = Math.min(12, Math.max(2, proximity * 0.35));
+            startAutoScroll();
+          } else {
+            autoScrollSpeed = 0;
+          }
+        } else {
+          autoScrollSpeed = 0;
+        }
+      }
+
+      function startAutoScroll() {
+        if (autoScrollRaf !== null) return;
+        function step() {
+          if (!activeDrag || autoScrollSpeed === 0) {
+            stopAutoScroll();
+            return;
+          }
+          tabsContainer.scrollLeft += autoScrollSpeed;
+          updateScrollButtons();
+          if (activeDrag && activeDrag.isDragging) {
+            updateDragPositions();
+          }
+          autoScrollRaf = requestAnimationFrame(step);
+        }
+        autoScrollRaf = requestAnimationFrame(step);
+      }
+
+      function createTabElement(tab, targetWidth) {
+        const tabEl = document.createElement("div");
+        let cls = "tab";
+        if (tab.id === currentState.activeTabId) cls += " active";
+        if (tab.suspended) cls += " suspended";
+        tabEl.className = cls;
+        tabEl.draggable = false;
+        tabEl.dataset.tabId = String(tab.id);
+
+        const statusSuffix = tab.suspended ? " (Suspended - click to restore)" : "";
+        tabEl.title = (tab.title || tab.url) + statusSuffix + "\n" + tab.url + "\nRight-click to duplicate";
+
+        const inner = document.createElement("div");
+        inner.className = "tab-inner";
+        inner.style.width = targetWidth + "px";
+
+        const iconSpan = document.createElement("span");
+        iconSpan.className = "tab-icon";
+        renderTabIcon(iconSpan, tab);
+
+        const titleOpacity = computeTitleOpacity(targetWidth);
+        const titleSpan = document.createElement("span");
+        titleSpan.className = "tab-title";
+        titleSpan.textContent = tab.title || tab.url || "New Tab";
+        titleSpan.style.opacity = String(titleOpacity);
+        tabEl.style.setProperty("--tab-title-opacity", String(titleOpacity));
+
+        const closeBtn = document.createElement("button");
+        closeBtn.className = "tab-close";
+        closeBtn.title = "Close tab";
+        closeBtn.setAttribute("aria-label", "Close tab");
+        closeBtn.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
+        closeBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          closeTabOptimistically(tab.id, true);
+        });
+
+        inner.appendChild(iconSpan);
+        inner.appendChild(titleSpan);
+        inner.appendChild(closeBtn);
+        tabEl.appendChild(inner);
+
+        tabEl.addEventListener("pointerdown", function (e) {
+          if (e.button !== 0 || e.target.closest(".tab-close")) return;
+          if (activeDrag) return;
+
+          const allTabs = Array.from(tabsContainer.querySelectorAll(".tab:not(.tab-closing)"));
+          const originIdx = allTabs.indexOf(tabEl);
+          if (originIdx === -1) return;
+
+          activeDrag = {
+            tabId: tab.id,
+            tabEl: tabEl,
+            pointerId: e.pointerId,
+            startX: e.clientX,
+            startY: e.clientY,
+            currentClientX: e.clientX,
+            originIndex: originIdx,
+            currentIndex: originIdx,
+            slotWidth: targetWidth + TAB_GAP,
+            tabCount: allTabs.length,
+            initialScrollLeft: tabsContainer.scrollLeft,
+            isDragging: false,
+            didMove: false
+          };
+
+          try { tabEl.setPointerCapture(e.pointerId); } catch (_) {}
+        });
+
+        tabEl.addEventListener("pointermove", function (e) {
+          if (!activeDrag || activeDrag.tabEl !== tabEl || activeDrag.pointerId !== e.pointerId) return;
+          activeDrag.currentClientX = e.clientX;
+
+          if (!activeDrag.isDragging) {
+            const dx = Math.abs(e.clientX - activeDrag.startX);
+            const dy = Math.abs(e.clientY - activeDrag.startY);
+            if (dx > 4 || dy > 4) {
+              activeDrag.isDragging = true;
+              tabEl.classList.add("dragging", "animating");
+              if (tab.id !== currentState.activeTabId) {
+                sendIpc("switch_tab:" + tab.id);
+              }
+            }
+          }
+
+          if (activeDrag.isDragging) {
+            updateDragPositions();
+          }
+        });
+
+        function finishDrag(e) {
+          if (!activeDrag || activeDrag.tabEl !== tabEl || activeDrag.pointerId !== e.pointerId) return;
+          stopAutoScroll();
+
+          try {
+            if (tabEl.hasPointerCapture && tabEl.hasPointerCapture(e.pointerId)) {
+              tabEl.releasePointerCapture(e.pointerId);
+            }
+          } catch (_) {}
+
+          if (!activeDrag.isDragging) {
+            if (e.type === "pointerup" && e.button === 0 && !e.target.closest(".tab-close")) {
+              if (e.altKey && tab.id !== currentState.activeTabId) {
+                sendIpc("suspend_tab:" + tab.id);
+              } else if (tab.id !== currentState.activeTabId) {
+                sendIpc("switch_tab:" + tab.id);
+              }
+            }
+            activeDrag = null;
+            return;
+          }
+
+          const draggedEl = activeDrag.tabEl;
+          const draggedId = activeDrag.tabId;
+          const originIdx = activeDrag.originIndex;
+          const finalIdx = activeDrag.currentIndex;
+          const slotWidth = activeDrag.slotWidth;
+
+          draggedEl.classList.remove("dragging");
+          draggedEl.classList.add("drag-dropping");
+
+          const finalTargetDx = (finalIdx - originIdx) * slotWidth;
+          draggedEl.style.setProperty("--drag-x", finalTargetDx + "px");
+
+          const allTabs = Array.from(tabsContainer.querySelectorAll(".tab:not(.tab-closing)"));
+          const targetEl = allTabs[finalIdx];
+          const targetId = targetEl ? parseInt(targetEl.dataset.tabId, 10) : null;
+
+          function finalizeDrop() {
+            draggedEl.classList.remove("drag-dropping");
+            const tabs = tabsContainer.querySelectorAll(".tab");
+            tabs.forEach(function (el) {
+              el.classList.remove("animating");
+              el.style.removeProperty("--drag-x");
+              el.style.removeProperty("--tab-shift-x");
+            });
+
+            if (finalIdx !== originIdx && targetId !== null && targetId !== draggedId) {
+              sendIpc("reorder_tab:" + draggedId + ":" + targetId);
+            }
+            activeDrag = null;
+          }
+
+          const duration = getComputedStyle(document.documentElement).getPropertyValue("--tab-anim-duration").trim();
+          const durationMs = parseInt(duration, 10);
+          if (durationMs === 0 || isNaN(durationMs)) {
+            finalizeDrop();
+          } else {
+            let finalized = false;
+            function onTransitionEnd(te) {
+              if (te.propertyName === "transform" && !finalized) {
+                finalized = true;
+                draggedEl.removeEventListener("transitionend", onTransitionEnd);
+                finalizeDrop();
+              }
+            }
+            draggedEl.addEventListener("transitionend", onTransitionEnd);
+            setTimeout(function () {
+              if (!finalized) {
+                finalized = true;
+                draggedEl.removeEventListener("transitionend", onTransitionEnd);
+                finalizeDrop();
+              }
+            }, TAB_ANIM_DURATION + 30);
+          }
+        }
+
+        tabEl.addEventListener("pointerup", finishDrag);
+        tabEl.addEventListener("pointercancel", finishDrag);
+
+        tabEl.addEventListener("mousedown", function (e) {
+          if (e.button === 1) {
+            e.preventDefault();
+            closeTabOptimistically(tab.id, true);
+          }
+        });
+
+        tabEl.addEventListener("contextmenu", function (e) {
+          e.preventDefault();
+          sendIpc("duplicate_tab:" + tab.id);
+        });
+
+        return tabEl;
+      }
+
+      function renderTabs() {
+        if (!currentState || !currentState.tabs) return;
+
+        const currentDomTabs = new Map();
+        tabsContainer.querySelectorAll(".tab").forEach(function (el) {
+          const id = parseInt(el.dataset.tabId, 10);
+          if (!isNaN(id)) {
+            currentDomTabs.set(id, el);
+          }
+        });
+
+        const activeIds = new Set(currentState.tabs.map(function (t) { return t.id; }));
+        currentDomTabs.forEach(function (el, id) {
+          if (!activeIds.has(id)) {
+            if (closingTabIds.has(id) || el.classList.contains("tab-closing")) {
+              return;
+            }
+            closingTabIds.add(id);
+            el.classList.add("tab-closing");
+            el.style.pointerEvents = "none";
+            el.draggable = false;
+            el.style.width = "0px";
+            el.style.opacity = "0";
+            let cleanedUp = false;
+            function cleanup() {
+              if (cleanedUp) return;
+              cleanedUp = true;
+              el.removeEventListener("transitionend", onEnd);
+              if (el.parentNode) el.remove();
+              closingTabIds.delete(id);
+            }
+            function onEnd(e) {
+              if (e.propertyName === "width" || e.propertyName === "opacity") cleanup();
+            }
+            el.addEventListener("transitionend", onEnd);
+            setTimeout(cleanup, TAB_ANIM_DURATION + 60);
+          }
+        });
+
+        const stripWidth = getAvailableStripWidth();
+        let targetWidth = computeTabWidth(currentState.tabs.length, stripWidth);
+
+        // Chrome behavior: keep remaining tabs at lockedTabWidth while mouse is in strip
+        if (isMouseClosing && lockedTabWidth !== null) {
+          targetWidth = Math.min(lockedTabWidth, targetWidth);
+        }
+
+        const titleOpacity = computeTitleOpacity(targetWidth);
+        const isTitleHidden = targetWidth <= 75;
+        const isMicro = targetWidth <= 52;
+
+        const newTabEls = [];
+
+        currentState.tabs.forEach(function (tab) {
+          let tabEl = currentDomTabs.get(tab.id);
+          if (tabEl) {
+            if (tabEl.classList.contains("tab-closing")) return;
+
+            tabEl.classList.toggle("active", tab.id === currentState.activeTabId);
+            tabEl.classList.toggle("suspended", Boolean(tab.suspended));
+            tabEl.dataset.titleHidden = isTitleHidden ? "true" : "false";
+            tabEl.dataset.micro = isMicro ? "true" : "false";
+            tabEl.style.setProperty("--tab-title-opacity", String(titleOpacity));
+
+            const statusSuffix = tab.suspended ? " (Suspended - click to restore)" : "";
+            tabEl.title = (tab.title || tab.url) + statusSuffix + "\n" + tab.url + "\nRight-click to duplicate";
+
+            const inner = tabEl.querySelector(".tab-inner");
+            if (inner) {
+              inner.style.width = targetWidth + "px";
+            }
+
+            const titleEl = tabEl.querySelector(".tab-title");
+            const newTitle = tab.title || tab.url || "New Tab";
+            if (titleEl) {
+              if (titleEl.textContent !== newTitle) titleEl.textContent = newTitle;
+              titleEl.style.opacity = String(titleOpacity);
+            }
+
+            const iconSpan = tabEl.querySelector(".tab-icon");
+            if (iconSpan) {
+              const wasLoading = Boolean(tabEl.dataset.loading === "true");
+              const prevFavicon = tabEl.dataset.favicon || "";
+              const currentFavicon = tab.favicon || "";
+              if (wasLoading !== Boolean(tab.loading) || prevFavicon !== currentFavicon) {
+                tabEl.dataset.loading = tab.loading ? "true" : "false";
+                tabEl.dataset.favicon = currentFavicon;
+                renderTabIcon(iconSpan, tab);
+              }
+            }
+
+            tabEl.style.width = targetWidth + "px";
+            tabEl.style.opacity = "1";
+
+            tabsContainer.appendChild(tabEl);
+          } else {
+            tabEl = createTabElement(tab, targetWidth);
+            tabEl.dataset.titleHidden = isTitleHidden ? "true" : "false";
+            tabEl.dataset.micro = isMicro ? "true" : "false";
+            tabEl.dataset.loading = tab.loading ? "true" : "false";
+            tabEl.dataset.favicon = tab.favicon || "";
+            tabEl.style.setProperty("--tab-title-opacity", String(titleOpacity));
+
+            const titleEl = tabEl.querySelector(".tab-title");
+            if (titleEl) titleEl.style.opacity = String(titleOpacity);
+
+            tabEl.style.width = "0px";
+            tabEl.style.opacity = "0";
+
+            tabsContainer.appendChild(tabEl);
+            newTabEls.push(tabEl);
+          }
+        });
+
+        if (newTabEls.length > 0) {
+          newTabEls.forEach(function (el) {
+            el.classList.add("animating");
+            void el.offsetWidth;
+          });
+
+          newTabEls.forEach(function (el) {
+            el.style.width = targetWidth + "px";
+            el.style.opacity = "1";
+            if (el.classList.contains("active")) {
+              el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+            }
+          });
+        }
+
+        if (activeDrag && activeDrag.isDragging) {
+          activeDrag.slotWidth = targetWidth + TAB_GAP;
+          const allTabs = Array.from(tabsContainer.querySelectorAll(".tab:not(.tab-closing)"));
+          activeDrag.tabCount = allTabs.length;
+          updateDragPositions();
+        }
+
+        updateScrollButtons();
+        scrollActiveTabIntoView();
+
+        if (newTabEls.length > 0) {
+          setTimeout(function () {
+            newTabEls.forEach(function (el) {
+              el.classList.remove("animating");
+            });
+            updateScrollButtons();
+            scrollActiveTabIntoView();
+          }, TAB_ANIM_DURATION + 30);
+        }
+      }
+
+      tabStrip.addEventListener("mouseleave", function () {
+        if (isMouseClosing) {
+          isMouseClosing = false;
+          lockedTabWidth = null;
+          if (currentState && currentState.tabs) {
+            updateTabsLayout(false);
+          }
+        }
+      });
+
+      if (tabScrollLeft && tabScrollRight) {
+        tabScrollLeft.addEventListener("click", function () {
+          tabsContainer.scrollBy({ left: -200, behavior: "smooth" });
+        });
+
+        tabScrollRight.addEventListener("click", function () {
+          tabsContainer.scrollBy({ left: 200, behavior: "smooth" });
+        });
+
+        tabsContainer.addEventListener("scroll", function () {
+          updateScrollButtons();
+        });
+
+        tabsContainer.addEventListener("wheel", function (e) {
+          if (e.deltaY !== 0 && tabsContainer.scrollWidth > tabsContainer.clientWidth) {
+            e.preventDefault();
+            tabsContainer.scrollLeft += e.deltaY;
+            updateScrollButtons();
+          }
+        }, { passive: false });
+      }
+
+      let resizeTimer = null;
+      let resizeFrames = 0;
+      let lastResizeTime = 0;
+
+      function updateTabsLayout(disableAnimations) {
+        if (!currentState || !currentState.tabs || currentState.tabs.length === 0) return;
+        const stripWidth = getAvailableStripWidth();
+        let targetWidth = computeTabWidth(currentState.tabs.length, stripWidth);
+        if (isMouseClosing && lockedTabWidth !== null) {
+          targetWidth = Math.min(lockedTabWidth, targetWidth);
+        }
+
+        const titleOpacity = computeTitleOpacity(targetWidth);
+        const isTitleHidden = targetWidth <= 75;
+        const isMicro = targetWidth <= 52;
+
+        if (disableAnimations) {
+          tabsContainer.classList.add("no-tab-transitions");
+        } else {
+          tabsContainer.classList.remove("no-tab-transitions");
+        }
+
+        const tabs = tabsContainer.querySelectorAll(".tab:not(.tab-closing)");
+        tabs.forEach(function (tabEl) {
+          tabEl.dataset.titleHidden = isTitleHidden ? "true" : "false";
+          tabEl.dataset.micro = isMicro ? "true" : "false";
+          tabEl.style.width = targetWidth + "px";
+          tabEl.style.setProperty("--tab-title-opacity", String(titleOpacity));
+
+          const inner = tabEl.querySelector(".tab-inner");
+          if (inner) inner.style.width = targetWidth + "px";
+
+          const titleEl = tabEl.querySelector(".tab-title");
+          if (titleEl) titleEl.style.opacity = String(titleOpacity);
+        });
+
+        if (activeDrag && activeDrag.isDragging) {
+          activeDrag.slotWidth = targetWidth + TAB_GAP;
+          updateDragPositions();
+        }
+
+        updateScrollButtons();
+      }
+
+      if (window.ResizeObserver) {
+        const stripObserver = new ResizeObserver(function () {
+          const now = performance.now();
+          const delta = now - lastResizeTime;
+          lastResizeTime = now;
+
+          // If resizes fire in rapid succession (< 80ms), user is actively drag-resizing the window
+          const isDragResize = delta < 80;
+          if (isDragResize) {
+            resizeFrames++;
+            if (resizeFrames >= 2) {
+              tabsContainer.classList.add("no-tab-transitions");
+            }
+          } else {
+            resizeFrames = 1;
+          }
+
+          updateTabsLayout(isDragResize && resizeFrames >= 2);
+
+          if (resizeTimer) clearTimeout(resizeTimer);
+          resizeTimer = setTimeout(function () {
+            tabsContainer.classList.remove("no-tab-transitions");
+            resizeFrames = 0;
+            updateTabsLayout(false);
+          }, 120);
+        });
+        stripObserver.observe(tabStrip);
+      }
+
+      window.__emberFocusOmnibox = function () {
+        omnibox.focus();
+        omnibox.select();
+      };
+
+      window.__emberOpenFind = function () {
+        findBar.classList.add("open");
+        findInput.focus();
+        findInput.select();
+        if (findInput.value) {
+          sendIpc("find_query:" + findInput.value);
+        }
+      };
+
+      window.__emberUpdateBlockedBadge = function (count) {
+        if (!currentState.adblockEnabled || currentState.activeSiteAllowlisted) return;
+        shieldBadge.textContent = String(count);
+        shieldBtn.title =
+          count +
+          " ads/trackers blocked on this tab — Click to pause Shield for this site (right-click for global toggle)";
+      };
+
+      window.__emberUpdateState = function (nextState) {
+        const prevActiveId = currentState.activeTabId;
+        currentState = nextState;
+
+        if (typeof currentState.tabAnimationsEnabled === "boolean") {
+          document.documentElement.setAttribute("data-reduced-motion", currentState.tabAnimationsEnabled ? "false" : "true");
+        }
+
+        if (currentState.theme === "dark" || currentState.theme === "light") {
+          document.documentElement.setAttribute("data-theme", currentState.theme);
+        }
+        if (currentState.accentColor) {
+          document.documentElement.style.setProperty("--accent", currentState.accentColor);
+        }
+
+        updateMaximizeIcon(Boolean(currentState.isMaximized));
+        renderTabs();
+
+        const active = currentState.tabs.find(function (t) {
+          return t.id === currentState.activeTabId;
+        });
+        if (active && (document.activeElement !== omnibox || prevActiveId !== currentState.activeTabId)) {
+          omnibox.value = active.url === "ember://newtab" ? "" : active.url;
+        }
+
+        if (currentState.activeBookmarked) {
+          bookmarkBtn.className = "omnibox-action-btn bookmarked";
+          bookmarkBtn.textContent = "★";
+          bookmarkBtn.title = "Remove bookmark (Ctrl+D)";
+        } else {
+          bookmarkBtn.className = "omnibox-action-btn";
+          bookmarkBtn.textContent = "☆";
+          bookmarkBtn.title = "Bookmark this page (Ctrl+D)";
+        }
+
+        const zoomPct = currentState.activeZoomPercent || 100;
+        if (zoomPct !== 100) {
+          zoomPill.className = "omnibox-action-btn zoom-pill visible";
+          zoomPill.textContent = zoomPct + "%";
+        } else {
+          zoomPill.className = "omnibox-action-btn zoom-pill";
+        }
+
+        if (currentState.findOpen) {
+          findBar.classList.add("open");
+        }
+        findCount.textContent = (currentState.findActive || 0) + "/" + (currentState.findTotal || 0);
+
+        if (currentState.downloadsCount > 0) {
+          downloadsBtn.className = "downloads-pill visible";
+          if (currentState.downloadsActive > 0) {
+            downloadsLabel.textContent = currentState.downloadsActive + " active";
+          } else {
+            downloadsLabel.textContent = currentState.downloadsCount + " done";
+          }
+          downloadsBtn.title = (currentState.latestDownloadText || "Downloads") + "\nClick to clear completed downloads";
+        } else {
+          downloadsBtn.className = "downloads-pill";
+        }
+
+        if (currentState.recentlyClosedCount > 0) {
+          reopenChip.textContent = "Reopen Tab (" + currentState.recentlyClosedCount + ")";
+          reopenChip.disabled = false;
+          reopenChip.style.opacity = "1";
+        } else {
+          reopenChip.textContent = "Reopen Tab";
+          reopenChip.disabled = true;
+          reopenChip.style.opacity = "0.5";
+        }
+
+        const blockedCount = active && typeof active.blockedCount === "number" ? active.blockedCount : 0;
+        if (!currentState.adblockEnabled) {
+          shieldBtn.className = "shield-btn shield-off";
+          shieldBadge.textContent = "OFF";
+          shieldBtn.title = "Global Shield is OFF — Right-click to enable global adblocker";
+        } else if (currentState.activeSiteAllowlisted) {
+          shieldBtn.className = "shield-btn shield-off";
+          shieldBadge.textContent = "PAUSED";
+          shieldBtn.title = "Shield paused on this site — Click to re-enable protection & reload";
+        } else {
+          shieldBtn.className = "shield-btn";
+          shieldBadge.textContent = String(blockedCount);
+          shieldBtn.title =
+            blockedCount +
+            " ads/trackers blocked on this tab — Click to pause Shield for this site (right-click for global toggle)";
+        }
+
+        if (currentState.adblockEnabled) {
+          adblockChip.className = "menu-chip adblock-on";
+          adblockChip.textContent = "Global Shield: ON";
+        } else {
+          adblockChip.className = "menu-chip adblock-off";
+          adblockChip.textContent = "Global Shield: OFF";
+        }
+      };
+
+      window.__emberBenchmarkTabScaling = function (options) {
+        options = options || {};
+        const counts = options.tabCounts || [1, 5, 15, 30, 60];
+        const framesPerCount = options.frames || 60;
+        const results = [];
+
+        return new Promise(function (resolve) {
+          let stepIndex = 0;
+
+          function runNextCount() {
+            if (stepIndex >= counts.length) {
+              window.__emberBenchmarkResults = results;
+              resolve(results);
+              return;
+            }
+
+            const count = counts[stepIndex++];
+            const sampleTabs = [];
+            for (let i = 1; i <= count; i++) {
+              sampleTabs.push({
+                id: i,
+                title: i === 1 ? "Welcome to Ember" : "Tab " + i + " - Fast & Lean Web",
+                url: i === 1 ? "https://example.com" : "https://example" + i + ".org/doc",
+                favicon: "",
+                loading: false,
+                suspended: false,
+                blockedCount: 0
+              });
+            }
+
+            // Apply state update for tab count
+            window.__emberUpdateState({
+              ...currentState,
+              activeTabId: 1,
+              tabs: sampleTabs
+            });
+
+            const deltas = [];
+            let lastTimestamp = 0;
+            let frameCounter = 0;
+
+            function measureFrame(timestamp) {
+              if (lastTimestamp > 0) {
+                const dt = timestamp - lastTimestamp;
+                deltas.push(dt);
+              }
+              lastTimestamp = timestamp;
+              frameCounter++;
+
+              if (frameCounter < framesPerCount) {
+                requestAnimationFrame(measureFrame);
+              } else {
+                // Compute frame time statistics
+                const totalDt = deltas.reduce(function (a, b) { return a + b; }, 0);
+                const avgDt = deltas.length > 0 ? totalDt / deltas.length : 16.67;
+                const fps = avgDt > 0 ? 1000 / avgDt : 60;
+                let maxDt = 0;
+                let minDt = 9999;
+                let dropped24 = 0; // Frames > 24ms (missed 60Hz 16.6ms window)
+                let dropped33 = 0; // Frames > 33.3ms (missed 30Hz window)
+
+                for (let j = 0; j < deltas.length; j++) {
+                  const d = deltas[j];
+                  if (d > maxDt) maxDt = d;
+                  if (d < minDt) minDt = d;
+                  if (d > 24.0) dropped24++;
+                  if (d > 33.3) dropped33++;
+                }
+
+                // Inspect DOM layout and progressive hiding state
+                const firstTab = tabsContainer.querySelector(".tab:not(.tab-closing)");
+                const firstRect = firstTab ? firstTab.getBoundingClientRect() : null;
+                const tabWidth = firstRect ? Math.round(firstRect.width) : 0;
+                const titleEl = firstTab ? firstTab.querySelector(".tab-title") : null;
+                const titleOpacity = titleEl ? parseFloat(getComputedStyle(titleEl).opacity) : 0;
+                const titleHidden = firstTab ? firstTab.dataset.titleHidden === "true" : false;
+                const microTab = firstTab ? firstTab.dataset.micro === "true" : false;
+
+                const activeClose = firstTab ? firstTab.querySelector(".tab-close") : null;
+                const activeCloseVisible = activeClose ? getComputedStyle(activeClose).display !== "none" : false;
+
+                let inactiveCloseVisible = false;
+                const inactiveTab = tabsContainer.querySelector(".tab:not(.active):not(.tab-closing)");
+                if (inactiveTab) {
+                  const inClose = inactiveTab.querySelector(".tab-close");
+                  inactiveCloseVisible = inClose ? getComputedStyle(inClose).display !== "none" : false;
+                }
+
+                updateScrollButtons();
+                const scrollBtnsVisible = Boolean(tabScrollLeft && getComputedStyle(tabScrollLeft).display === "flex");
+                const isOverflowing = scrollBtnsVisible;
+                const newTabRect = newTabBtn ? newTabBtn.getBoundingClientRect() : null;
+
+                results.push({
+                  tabCount: count,
+                  fps: Math.round(fps * 10) / 10,
+                  avgFrameTimeMs: Math.round(avgDt * 100) / 100,
+                  maxFrameTimeMs: Math.round(maxDt * 100) / 100,
+                  minFrameTimeMs: Math.round(minDt * 100) / 100,
+                  droppedFramesCount: dropped24,
+                  severeDroppedFramesCount: dropped33,
+                  totalFramesMeasured: deltas.length,
+                  computedWidthPx: tabWidth,
+                  titleOpacity: Math.round(titleOpacity * 100) / 100,
+                  titleHidden: titleHidden,
+                  microTab: microTab,
+                  activeCloseVisible: activeCloseVisible,
+                  inactiveCloseVisible: inactiveCloseVisible,
+                  scrollWidth: tabsContainer.scrollWidth,
+                  clientWidth: tabsContainer.clientWidth,
+                  stripClientWidth: tabStrip.clientWidth,
+                  isOverflowing: isOverflowing,
+                  scrollButtonsVisible: scrollBtnsVisible,
+                  newTabBtnVisible: Boolean(newTabRect && newTabRect.width > 0)
+                });
+
+                setTimeout(runNextCount, 60);
+              }
+            }
+
+            requestAnimationFrame(function (ts) {
+              lastTimestamp = ts;
+              requestAnimationFrame(measureFrame);
+            });
+          }
+
+          runNextCount();
+        });
+      };
+
+      window.__emberRunEdgeCasesTest = async function () {
+        const testResults = [];
+        function logTest(name, passed, details) {
+          testResults.push({ name: name, passed: passed, details: details });
+        }
+
+        try {
+          // 1. Rapid open/close spam
+          const spamTabs = [];
+          for (let i = 1; i <= 8; i++) {
+            spamTabs.push({ id: i, title: "Spam Tab " + i, url: "https://example" + i + ".com", favicon: "", loading: false, suspended: false, blockedCount: 0 });
+          }
+          window.__emberUpdateState({ ...currentState, activeTabId: 8, tabs: spamTabs });
+          // Rapidly close 4 tabs
+          closeTabOptimistically(1, false);
+          closeTabOptimistically(2, false);
+          closeTabOptimistically(3, false);
+          closeTabOptimistically(4, false);
+          await new Promise(function (r) { setTimeout(r, 220); });
+          const remTabs = tabsContainer.querySelectorAll(".tab:not(.tab-closing)");
+          logTest("rapid_open_close_spam", remTabs.length === 4, "Remaining non-closing tabs count: " + remTabs.length);
+
+          // 2. Interrupted opening animation
+          const inter1 = [
+            { id: 10, title: "Tab 10", url: "https://example.com/10", favicon: "", loading: false, suspended: false, blockedCount: 0 },
+            { id: 11, title: "Tab 11", url: "https://example.com/11", favicon: "", loading: false, suspended: false, blockedCount: 0 }
+          ];
+          window.__emberUpdateState({ ...currentState, activeTabId: 11, tabs: inter1 });
+          await new Promise(function (r) { setTimeout(r, 40); }); // mid-animation
+          const inter2 = inter1.concat([
+            { id: 12, title: "Tab 12", url: "https://example.com/12", favicon: "", loading: false, suspended: false, blockedCount: 0 }
+          ]);
+          window.__emberUpdateState({ ...currentState, activeTabId: 12, tabs: inter2 });
+          await new Promise(function (r) { setTimeout(r, 220); });
+          const interEls = tabsContainer.querySelectorAll(".tab:not(.tab-closing)");
+          const allHaveWidth = Array.from(interEls).every(function (el) { return parseInt(el.style.width, 10) > 0; });
+          logTest("interrupted_opening_animation", interEls.length === 3 && allHaveWidth, "3 tabs settled with valid width");
+
+          // 3. Closing all tabs
+          window.__emberUpdateState({ ...currentState, activeTabId: 0, tabs: [] });
+          await new Promise(function (r) { setTimeout(r, 60); });
+          const zeroTabs = tabsContainer.querySelectorAll(".tab:not(.tab-closing)");
+          logTest("closing_all_tabs", zeroTabs.length === 0, "Handled 0 tabs without error");
+
+          // 4. Window resize mid-animation
+          const resizeTabs = [];
+          for (let i = 20; i <= 25; i++) {
+            resizeTabs.push({ id: i, title: "Resize Tab " + i, url: "https://example" + i + ".com", favicon: "", loading: false, suspended: false, blockedCount: 0 });
+          }
+          window.__emberUpdateState({ ...currentState, activeTabId: 20, tabs: resizeTabs });
+          await new Promise(function (r) { setTimeout(r, 40); });
+          updateTabsLayout(true);
+          await new Promise(function (r) { setTimeout(r, 150); });
+          updateTabsLayout(false);
+          logTest("resize_mid_animation", tabsContainer.querySelectorAll(".tab:not(.tab-closing)").length === 6, "Layout updated cleanly during resize");
+
+          // 5. Tab suspension and restore
+          const suspTabs = [
+            { id: 31, title: "Active Tab", url: "https://example.com/active", favicon: "", loading: false, suspended: false, blockedCount: 0 },
+            { id: 32, title: "Suspended Tab", url: "https://example.com/idle", favicon: "", loading: false, suspended: true, blockedCount: 0 }
+          ];
+          window.__emberUpdateState({ ...currentState, activeTabId: 31, tabs: suspTabs });
+          await new Promise(function (r) { setTimeout(r, 60); });
+          const suspEl = tabsContainer.querySelector('.tab[data-tab-id="32"]');
+          const wasSuspended = suspEl ? suspEl.classList.contains("suspended") : false;
+          suspTabs[1].suspended = false;
+          window.__emberUpdateState({ ...currentState, activeTabId: 32, tabs: suspTabs });
+          await new Promise(function (r) { setTimeout(r, 60); });
+          const restoredEl = tabsContainer.querySelector('.tab[data-tab-id="32"]');
+          const isRestored = restoredEl ? (!restoredEl.classList.contains("suspended") && restoredEl.classList.contains("active")) : false;
+          logTest("tab_suspension_and_restore", wasSuspended && isRestored, "Suspension flag reflected and cleared on restore");
+
+          // 6. Duplicate tab
+          const dupTabs = [
+            { id: 41, title: "Original Tab", url: "https://example.com/doc", favicon: "", loading: false, suspended: false, blockedCount: 0 },
+            { id: 42, title: "Original Tab", url: "https://example.com/doc", favicon: "", loading: false, suspended: false, blockedCount: 0 }
+          ];
+          window.__emberUpdateState({ ...currentState, activeTabId: 42, tabs: dupTabs });
+          await new Promise(function (r) { setTimeout(r, 60); });
+          const dupEls = tabsContainer.querySelectorAll(".tab:not(.tab-closing)");
+          logTest("duplicate_tab", dupEls.length === 2 && dupEls[1].classList.contains("active"), "Duplicated tab instantiated and activated");
+
+          // 7. Drag-to-reorder and sibling displacement
+          const dragTabs = [];
+          for (let i = 50; i <= 53; i++) {
+            dragTabs.push({ id: i, title: "Drag Tab " + i, url: "https://example" + i + ".com", favicon: "", loading: false, suspended: false, blockedCount: 0 });
+          }
+          window.__emberUpdateState({ ...currentState, activeTabId: 50, tabs: dragTabs });
+          await new Promise(function (r) { setTimeout(r, 60); });
+          const firstDragEl = tabsContainer.querySelector('.tab[data-tab-id="50"]');
+          firstDragEl.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 1, clientX: 100, clientY: 20, button: 0, bubbles: true }));
+          firstDragEl.dispatchEvent(new PointerEvent("pointermove", { pointerId: 1, clientX: 300, clientY: 20, bubbles: true }));
+          await new Promise(function (r) { setTimeout(r, 40); });
+          const isGlued = firstDragEl.classList.contains("dragging");
+          const siblingShifted = Array.from(tabsContainer.querySelectorAll('.tab:not([data-tab-id="50"])')).some(function (el) { return el.style.getPropertyValue("--tab-shift-x") !== ""; });
+          firstDragEl.dispatchEvent(new PointerEvent("pointerup", { pointerId: 1, clientX: 300, clientY: 20, button: 0, bubbles: true }));
+          await new Promise(function (r) { setTimeout(r, 220); });
+          logTest("drag_to_reorder_and_sibling_gap", isGlued && siblingShifted, "Pointer tracking glued dragged tab and shifted siblings");
+
+          // 8. Reduced motion and animations setting
+          window.__emberUpdateState({ ...currentState, tabAnimationsEnabled: false });
+          const hasAttr = document.documentElement.getAttribute("data-reduced-motion") === "true";
+          const dur = getComputedStyle(document.documentElement).getPropertyValue("--tab-anim-duration").trim();
+          logTest("reduced_motion_and_animations_setting", hasAttr && (dur === "0ms" || dur === "0s"), "data-reduced-motion applied with 0ms duration");
+          window.__emberUpdateState({ ...currentState, tabAnimationsEnabled: true });
+
+          return testResults;
+        } catch (err) {
+          logTest("exception_in_tests", false, err.toString());
+          return testResults;
+        }
+      };
+
+      if (window.location && window.location.search && window.location.search.indexOf("bench=tabs") !== -1) {
+        window.addEventListener("load", function () {
+          setTimeout(function () {
+            window.__emberBenchmarkTabScaling().then(function (res) {
+              fetch("/api/bench-result", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(res)
+              }).catch(function (err) {
+                console.error("Failed to POST benchmark result:", err);
+              });
+            });
+          }, 100);
+        });
+      }
+
+      if (window.location && window.location.search && window.location.search.indexOf("test=edge-cases") !== -1) {
+        window.addEventListener("load", function () {
+          setTimeout(function () {
+            window.__emberRunEdgeCasesTest().then(function (res) {
+              fetch("/api/edge-case-result", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(res)
+              }).catch(function (err) {
+                console.error("Failed to POST edge case result:", err);
+              });
+            });
+          }, 100);
+        });
+      }
+
+      sendIpc("ready");
+    })();
+  </script>
+</body>
+</html>

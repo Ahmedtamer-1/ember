@@ -1,0 +1,43 @@
+[package]
+name = "ember"
+version = "0.1.0"
+edition = "2021"
+description = "An extremely lightweight desktop web browser written in Rust"
+
+[lib]
+name = "ember"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ember"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+# Cross-platform window creation and event-loop management for the browser shell
+tao = "0.31"
+# System webview abstraction (WebView2 on Windows, WebKit on macOS/Linux)
+wry = { version = "0.50", default-features = false }
+# Brave's adblock-rust engine for EasyList/EasyPrivacy network and cosmetic filtering
+adblock = { version = "0.13", default-features = false, features = ["embedded-domain-resolver"] }
+# Lightweight SQLite bindings for persistent browsing history, bookmarks, and per-site zoom settings
+rusqlite = { version = "0.42", default-features = false, features = ["bundled"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Direct WebView2 COM bindings for WebResourceRequested, AddScriptToExecuteOnDocumentCreated, and PermissionRequested
+# Exact same version that wry v0.50.5 depends on to avoid duplicate windows crates
+webview2-com = "0.36.0"
+# Core Windows COM interface & string types matching wry v0.50.5 and webview2-com v0.36.0
+windows-core = "0.60.1"
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+# Enable OS-provided WebKit GTK on Linux and WebKit WKWebView on macOS
+wry = { version = "0.50", features = ["os-webview"] }
+
+[profile.release]
+opt-level = "z"       # Optimize aggressively for binary size while maintaining speed
+lto = "fat"           # Full link-time optimization across all dependency crates
+codegen-units = 1     # Single codegen unit for maximum optimization and dead-code elimination
+panic = "abort"       # Omit stack unwinding tables and panic formatting overhead
+strip = true          # Strip debug and symbol tables from the final binary
+

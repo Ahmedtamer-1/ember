@@ -1,0 +1,25 @@
+# Rust build artifacts
+/target
+
+# Temporary log / output files
+err.txt
+out.txt
+*.log
+
+# Python cache & test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# OS-specific files
+Thumbs.db
+[Dd]esktop.ini
+.DS_Store
+
+# IDE and Editor configurations
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
