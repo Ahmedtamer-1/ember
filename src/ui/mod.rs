@@ -134,6 +134,30 @@ pub const PAGE_INIT_SCRIPT: &str = r#"
       post("shortcut:tab_index:" + e.key);
     }
   });
+
+  window.addEventListener("pointerdown", function () {
+    post("page_pointer_down");
+  }, true);
+
+  function notifySpaNav() {
+    if (location.protocol === "http:" || location.protocol === "https:") {
+      post("spa_nav:" + location.href);
+    }
+  }
+  var origPushState = history.pushState;
+  history.pushState = function () {
+    var ret = origPushState.apply(this, arguments);
+    notifySpaNav();
+    return ret;
+  };
+  var origReplaceState = history.replaceState;
+  history.replaceState = function () {
+    var ret = origReplaceState.apply(this, arguments);
+    notifySpaNav();
+    return ret;
+  };
+  window.addEventListener("popstate", notifySpaNav);
+  window.addEventListener("hashchange", notifySpaNav);
 })();
 "#;
 
@@ -243,6 +267,14 @@ pub struct WindowAppearance {
 pub enum UiCommand {
     Ready,
     NewTab,
+    NewWindow,
+    OpenNewTab(String),
+    OpenDownloads,
+    Print,
+    OpenPopup(String),
+    ClosePopup,
+    OmniboxSuggest { query_id: u64, query: String },
+    OmniboxSelect(isize),
     SwitchTab(usize),
     NextTab,
     PrevTab,
@@ -281,6 +313,10 @@ pub fn parse_ipc_command(raw: &str) -> Option<UiCommand> {
     match trimmed {
         "ready" => Some(UiCommand::Ready),
         "new_tab" => Some(UiCommand::NewTab),
+        "new_window" => Some(UiCommand::NewWindow),
+        "open_downloads" => Some(UiCommand::OpenDownloads),
+        "print" => Some(UiCommand::Print),
+        "close_popup" => Some(UiCommand::ClosePopup),
         "next_tab" => Some(UiCommand::NextTab),
         "prev_tab" => Some(UiCommand::PrevTab),
         "reopen_closed_tab" => Some(UiCommand::ReopenClosedTab),
@@ -343,6 +379,21 @@ pub fn parse_ipc_command(raw: &str) -> Option<UiCommand> {
                 Some(UiCommand::FindNext(q.to_owned()))
             } else if let Some(q) = trimmed.strip_prefix("find_prev:") {
                 Some(UiCommand::FindPrev(q.to_owned()))
+            } else if let Some(url) = trimmed.strip_prefix("open_new_tab:") {
+                Some(UiCommand::OpenNewTab(url.trim().to_owned()))
+            } else if let Some(json) = trimmed.strip_prefix("open_popup:") {
+                Some(UiCommand::OpenPopup(json.trim().to_owned()))
+            } else if let Some(rest) = trimmed.strip_prefix("omnibox_suggest:") {
+                let mut parts = rest.splitn(2, ':');
+                let query_id = parts.next()?.trim().parse::<u64>().ok()?;
+                let query = parts.next().unwrap_or("").to_owned();
+                Some(UiCommand::OmniboxSuggest { query_id, query })
+            } else if let Some(idx_str) = trimmed.strip_prefix("omnibox_select:") {
+                idx_str
+                    .trim()
+                    .parse::<isize>()
+                    .ok()
+                    .map(UiCommand::OmniboxSelect)
             } else {
                 trimmed
                     .strip_prefix("navigate:")
@@ -363,6 +414,11 @@ pub enum PageIpcEvent {
         url: String,
         classes: Vec<String>,
         ids: Vec<String>,
+    },
+    ScriptletLog {
+        url: String,
+        name: String,
+        detail: String,
     },
     FindResult {
         active: usize,
@@ -402,6 +458,8 @@ pub enum PageIpcEvent {
     ShortcutZoomIn,
     ShortcutZoomOut,
     ShortcutZoomReset,
+    PointerDown,
+    SpaNav(String),
 }
 
 /// Parses an IPC payload emitted inside a tab's page WebView.
@@ -424,6 +482,7 @@ pub fn parse_page_ipc_event(raw: &str) -> Option<PageIpcEvent> {
         "shortcut:zoom_reset" => Some(PageIpcEvent::ShortcutZoomReset),
         "ctx_inspect:" => Some(PageIpcEvent::ContextInspect),
         "history_clear:" => Some(PageIpcEvent::HistoryClear),
+        "page_pointer_down" => Some(PageIpcEvent::PointerDown),
         _ => {
             if let Some(idx_str) = trimmed.strip_prefix("shortcut:tab_index:") {
                 idx_str
@@ -446,6 +505,13 @@ pub fn parse_page_ipc_event(raw: &str) -> Option<PageIpcEvent> {
             } else if let Some(find_str) = trimmed.strip_prefix("find_result:") {
                 let (active, total) = crate::find::parse_find_result(find_str)?;
                 Some(PageIpcEvent::FindResult { active, total })
+            } else if let Some(spa_url) = trimmed.strip_prefix("spa_nav:") {
+                let u = spa_url.trim();
+                if !u.is_empty() {
+                    Some(PageIpcEvent::SpaNav(u.to_owned()))
+                } else {
+                    None
+                }
             } else if let Some(href) = trimmed.strip_prefix("ctx_open_new_tab:") {
                 let h = href.trim();
                 if !h.is_empty() {
@@ -494,11 +560,20 @@ pub fn parse_page_ipc_event(raw: &str) -> Option<PageIpcEvent> {
                 }
             } else if let Some(json_str) = trimmed.strip_prefix("cosmetic_tokens:") {
                 parse_cosmetic_tokens_payload(json_str)
+            } else if let Some(json_str) = trimmed.strip_prefix("scriptlet_log:") {
+                parse_scriptlet_log_payload(json_str)
             } else {
                 None
             }
         }
     }
+}
+
+fn parse_scriptlet_log_payload(json_str: &str) -> Option<PageIpcEvent> {
+    let url = extract_json_string_field(json_str, "\"url\"").unwrap_or_default();
+    let name = extract_json_string_field(json_str, "\"name\"")?;
+    let detail = extract_json_string_field(json_str, "\"detail\"").unwrap_or_default();
+    Some(PageIpcEvent::ScriptletLog { url, name, detail })
 }
 
 fn parse_cosmetic_tokens_payload(json_str: &str) -> Option<PageIpcEvent> {
@@ -826,7 +901,7 @@ pub fn build_state_sync_script(state: &ChromeSyncState<'_>) -> String {
     script
 }
 
-fn push_js_escaped(out: &mut String, s: &str) {
+pub fn push_js_escaped(out: &mut String, s: &str) {
     for ch in s.chars() {
         match ch {
             '\\' => out.push_str("\\\\"),

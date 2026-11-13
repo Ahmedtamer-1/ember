@@ -7,8 +7,10 @@ use crate::{
 pub const NEWTAB_URL: &str = "ember://newtab";
 pub const HISTORY_URL: &str = "ember://history";
 pub const BOOKMARKS_URL: &str = "ember://bookmarks";
+pub const DOWNLOADS_URL: &str = "ember://downloads";
 pub const SETTINGS_URL: &str = "ember://settings";
 pub const WARNING_URL: &str = "ember://warning";
+pub const ADBLOCK_DEBUG_URL: &str = "ember://adblock-debug";
 
 /// Services required to render dynamic internal pages.
 pub struct PageCtx<'a> {
@@ -34,9 +36,23 @@ pub fn canonical_internal_url(url: &str) -> Option<&'static str> {
     match path {
         "history" => Some(HISTORY_URL),
         "bookmarks" => Some(BOOKMARKS_URL),
+        "downloads" => Some(DOWNLOADS_URL),
         "settings" => Some(SETTINGS_URL),
         "warning" => Some(WARNING_URL),
+        "adblock-debug" => Some(ADBLOCK_DEBUG_URL),
         _ => Some(NEWTAB_URL),
+    }
+}
+
+/// Returns the canonical URL if `url` is a singleton internal page that should be
+/// opened in a new tab or focused if already open (`settings`, `history`, `bookmarks`, `downloads`).
+pub fn is_singleton_internal_url(url: &str) -> Option<&'static str> {
+    match canonical_internal_url(url)? {
+        SETTINGS_URL => Some(SETTINGS_URL),
+        HISTORY_URL => Some(HISTORY_URL),
+        BOOKMARKS_URL => Some(BOOKMARKS_URL),
+        DOWNLOADS_URL => Some(DOWNLOADS_URL),
+        _ => None,
     }
 }
 
@@ -73,6 +89,10 @@ pub fn render_internal_page(url: &str, ctx: &PageCtx<'_>) -> Option<(String, Str
             String::from("Bookmarks"),
             render_bookmarks_html(&ctx.storage.list_bookmarks()),
         )),
+        DOWNLOADS_URL => Some((
+            String::from("Downloads"),
+            render_downloads_html(ctx.storage.downloads_dir()),
+        )),
         SETTINGS_URL => Some((
             String::from("Settings"),
             render_settings_html(
@@ -84,6 +104,10 @@ pub fn render_internal_page(url: &str, ctx: &PageCtx<'_>) -> Option<(String, Str
         WARNING_URL => Some((
             String::from("Connection not secure"),
             render_https_warning_html(&warning_target(url).unwrap_or_default()),
+        )),
+        ADBLOCK_DEBUG_URL => Some((
+            String::from("Adblock Debug"),
+            render_adblock_debug_html(ctx.adblocker),
         )),
         _ => None,
     }
@@ -756,6 +780,49 @@ function filterList(q) {{
     )
 }
 
+fn render_downloads_html(downloads_dir: &std::path::Path) -> String {
+    let dir_escaped = escape_html(&downloads_dir.to_string_lossy());
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Downloads</title>
+<style>{SHARED_INTERNAL_CSS}
+.page-wrap {{ max-width: 820px; margin: 0 auto; padding: 36px 24px 64px; }}
+</style>
+</head>
+<body>
+<div class="page-wrap">
+  <div class="header">
+    <div>
+      <h1>Downloads</h1>
+      <div class="sub">Files are saved to <code>{dir_escaped}</code></div>
+    </div>
+    <div class="nav-pills">
+      <button class="pill-btn" onclick="go('ember://newtab')">New Tab</button>
+      <button class="pill-btn" onclick="go('ember://history')">History</button>
+      <button class="pill-btn" onclick="go('ember://bookmarks')">&#9733; Bookmarks</button>
+      <button class="pill-btn" onclick="go('ember://settings')">&#9881; Settings</button>
+    </div>
+  </div>
+  <div class="list-card">
+    <div class="empty">Downloaded files are stored in <code>{dir_escaped}</code>.</div>
+  </div>
+</div>
+<script>
+function go(target) {{
+  if (window.ipc && typeof window.ipc.postMessage === 'function') {{
+    window.ipc.postMessage('navigate:' + target);
+  }}
+}}
+</script>
+</body>
+</html>"#
+    )
+}
+
 fn extract_display_host(url: &str) -> String {
     let after_scheme = url.find("://").map(|idx| &url[idx + 3..]).unwrap_or(url);
     let host = after_scheme
@@ -991,8 +1058,9 @@ fn render_settings_html(
         String::from("Updating filter lists...")
     } else {
         format!(
-            "Last updated: {}",
-            format_last_updated(adblocker.last_updated_epoch())
+            "Includes uBlock Origin filters (Unbreak, Annoyances, Quick fixes every 6h; others every 24h). Last updated: {} | Quick fixes: {}",
+            format_last_updated(adblocker.last_updated_epoch()),
+            format_last_updated(adblocker.quick_fixes_last_updated_epoch())
         )
     };
 
@@ -1016,7 +1084,7 @@ fn render_settings_html(
         settings.easyprivacy_enabled,
     ));
     ads.push_str(&format!(
-        r#"<div class="row"><div class="row-text"><div class="row-title">Filter lists</div><div class="row-desc">{status}</div></div><button class="btn primary" {dis} onclick="act('update_filters')">Update now</button></div>"#,
+        r#"<div class="row"><div class="row-text"><div class="row-title">Filter lists</div><div class="row-desc">{status}</div></div><button class="btn primary" {dis} onclick="act('update_filters')">Update filters now</button></div>"#,
         status = escape_html(&status_text),
         dis = if updating { "disabled" } else { "" },
     ));
@@ -1057,6 +1125,12 @@ fn render_settings_html(
         "Shows a warning before loading sites that only offer insecure HTTP.",
         settings.https_only_mode,
     ));
+    privacy.push_str(&switch_row(
+        "search_suggestions_enabled",
+        "Show online search suggestions",
+        "Fetches autocomplete suggestions from your default search engine as you type. Note: typed text in the address bar is sent to the search engine.",
+        settings.search_suggestions_enabled,
+    ));
 
     let clear = r#"<div class="checks"><label><input type="checkbox" id="cd-history" checked> Browsing history</label><label><input type="checkbox" id="cd-cookies"> Cookies and site data</label><label><input type="checkbox" id="cd-cache"> Cached files</label></div><div class="actions"><button class="btn danger" onclick="clearData()">Clear data</button><span id="clear-status" class="status"></span></div>"#;
 
@@ -1090,6 +1164,95 @@ fn render_settings_html(
 </body>
 </html>"#,
         config_path = escape_html(&config_path.display().to_string()),
+    )
+}
+
+fn render_adblock_debug_html(adblocker: &Adblocker) -> String {
+    let (tab_id, snapshot) = adblocker.latest_tab_debug_snapshot();
+    let updating = adblocker.is_updating();
+    let page_url = if snapshot.page_url.is_empty() {
+        String::from("(no web tab loaded yet)")
+    } else {
+        snapshot.page_url.clone()
+    };
+
+    let mut rows_html = String::new();
+    for entry in snapshot.entries.iter().rev() {
+        rows_html.push_str(&format!(
+            r#"<tr><td><span class="badge badge-{cls}">{kind}</span></td><td class="mono">{rule}</td><td>{rtype}</td><td class="mono url-col">{target}</td></tr>"#,
+            cls = escape_html(entry.kind.label()),
+            kind = escape_html(entry.kind.label()),
+            rule = escape_html(&entry.rule_or_name),
+            rtype = escape_html(&entry.request_type),
+            target = escape_html(&entry.target_url),
+        ));
+    }
+    if rows_html.is_empty() {
+        rows_html.push_str(r#"<tr><td colspan="4" class="empty">No matched rules or scriptlets recorded for this tab yet.</td></tr>"#);
+    }
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Adblock Debug</title>
+<style>
+{SHARED_INTERNAL_CSS}{SETTINGS_CSS}
+.dbg-wrap {{ max-width: 1080px; margin: 0 auto; padding: 36px 24px; }}
+.dbg-head {{ display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }}
+.dbg-meta {{ color: var(--muted); font-size: 13px; margin-bottom: 18px; line-height: 1.6; }}
+.dbg-table {{ width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; font-size: 12.5px; }}
+.dbg-table th, .dbg-table td {{ text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }}
+.dbg-table th {{ background: var(--surface-2); font-weight: 600; color: var(--muted); }}
+.mono {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; word-break: break-all; }}
+.url-col {{ max-width: 380px; color: var(--muted); }}
+.badge {{ display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }}
+.badge-scriptlet {{ background: rgba(16, 185, 129, 0.16); color: #10b981; }}
+.badge-network-block {{ background: rgba(239, 68, 68, 0.16); color: #ef4444; }}
+.badge-redirect {{ background: rgba(245, 158, 11, 0.16); color: #f59e0b; }}
+.badge-cosmetic {{ background: rgba(59, 130, 246, 0.16); color: #3b82f6; }}
+.empty {{ text-align: center; color: var(--muted); padding: 28px 12px; }}
+</style>
+</head>
+<body>
+<div class="dbg-wrap">
+  <div class="dbg-head">
+    <div>
+      <h1>Adblock Debug</h1>
+      <div class="dbg-meta">
+        Tab #{tab_id}: <span class="mono">{page_url}</span><br>
+        Standard lists updated: {std_updated} &middot; Quick fixes (6h): {qf_updated} &middot; Matches shown: {count}
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn" onclick="location.reload()">Refresh</button>
+      <button class="btn primary" {dis} onclick="updateNow()">Update filters now</button>
+    </div>
+  </div>
+  <table class="dbg-table">
+    <thead><tr><th>Kind</th><th>Rule / Scriptlet</th><th>Type</th><th>Target URL</th></tr></thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+</div>
+<script>
+function updateNow() {{
+  if (window.ipc && typeof window.ipc.postMessage === 'function') {{
+    window.ipc.postMessage('settings_action:update_filters');
+    setTimeout(function() {{ location.reload(); }}, 1500);
+  }}
+}}
+</script>
+</body>
+</html>"#,
+        tab_id = tab_id,
+        page_url = escape_html(&page_url),
+        std_updated = escape_html(&format_last_updated(adblocker.last_updated_epoch())),
+        qf_updated = escape_html(&format_last_updated(
+            adblocker.quick_fixes_last_updated_epoch()
+        )),
+        count = snapshot.entries.len(),
+        dis = if updating { "disabled" } else { "" },
     )
 }
 

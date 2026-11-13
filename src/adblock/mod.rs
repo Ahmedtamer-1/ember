@@ -1,9 +1,11 @@
+pub mod resources;
+
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, RwLock,
     },
     thread,
@@ -23,14 +25,36 @@ pub const EASYLIST_URL: &str = "https://easylist.to/easylist/easylist.txt";
 /// Official EasyPrivacy filter list URL.
 pub const EASYPRIVACY_URL: &str = "https://easylist.to/easylist/easyprivacy.txt";
 
-/// Interval (24 hours) between automatic background filter list updates.
+/// uBlock Origin core filters URL.
+pub const UBLOCK_FILTERS_URL: &str = "https://ublockorigin.github.io/uAssets/filters/filters.txt";
+
+/// uBlock Origin unbreak filters URL.
+pub const UBLOCK_UNBREAK_URL: &str = "https://ublockorigin.github.io/uAssets/filters/unbreak.txt";
+
+/// uBlock Origin quick-fixes filters URL (tracks YouTube and fast-moving site changes).
+pub const UBLOCK_QUICK_FIXES_URL: &str =
+    "https://ublockorigin.github.io/uAssets/filters/quick-fixes.txt";
+
+/// uBlock Origin annoyances filters URL.
+pub const UBLOCK_ANNOYANCES_URL: &str =
+    "https://ublockorigin.github.io/uAssets/filters/annoyances-others.txt";
+
+/// Interval (24 hours) between automatic background updates for standard filter lists.
 pub const FILTER_UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Serialized engine cache filename inside `%LOCALAPPDATA%\Ember\filters`.
-const ENGINE_CACHE_FILE: &str = "engine.dat";
+/// Interval (6 hours) between automatic background updates for `uBlock filters - Quick fixes`.
+pub const QUICK_FIXES_UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Serialized engine cache filenames inside `%LOCALAPPDATA%\Ember\filters`.
+const ENGINE_CACHE_FILE: &str = "engine-v2.dat";
 const EASYLIST_CACHE_FILE: &str = "easylist.txt";
 const EASYPRIVACY_CACHE_FILE: &str = "easyprivacy.txt";
+const UBLOCK_FILTERS_CACHE_FILE: &str = "ublock-filters.txt";
+const UBLOCK_UNBREAK_CACHE_FILE: &str = "ublock-unbreak.txt";
+const UBLOCK_QUICK_FIXES_CACHE_FILE: &str = "ublock-quick-fixes.txt";
+const UBLOCK_ANNOYANCES_CACHE_FILE: &str = "ublock-annoyances.txt";
 const LAST_UPDATED_FILE: &str = "last_updated.txt";
+const LAST_QUICK_FIXES_UPDATED_FILE: &str = "last_updated_quick_fixes.txt";
 const ALLOWLIST_FILE: &str = "allowlist.txt";
 
 /// Embedded bootstrap rules (EasyList + EasyPrivacy core network & cosmetic rules)
@@ -134,6 +158,9 @@ pub const COSMETIC_DOCUMENT_CREATED_SCRIPT: &str = r#"
   var genericHideDisabled = false;
   var flushTimer = null;
 
+  window.__emberExecutedScriptlets = window.__emberExecutedScriptlets || [];
+  var loggedScriptlets = Object.create(null);
+
   function postIpc(msg) {
     if (window.ipc && typeof window.ipc.postMessage === "function") {
       window.ipc.postMessage(msg);
@@ -141,6 +168,14 @@ pub const COSMETIC_DOCUMENT_CREATED_SCRIPT: &str = r#"
       window.chrome.webview.postMessage(msg);
     }
   }
+
+  window.__emberLogScriptlet = function (name, detail) {
+    var key = String(name || "") + ":" + String(detail || "");
+    if (loggedScriptlets[key]) return;
+    loggedScriptlets[key] = true;
+    window.__emberExecutedScriptlets.push({ name: name, detail: detail || "", url: location.href });
+    postIpc("scriptlet_log:" + JSON.stringify({ url: location.href, name: String(name || ""), detail: String(detail || "") }));
+  };
 
   function ensureStyleElement() {
     if (styleEl && styleEl.isConnected) return styleEl;
@@ -156,6 +191,8 @@ pub const COSMETIC_DOCUMENT_CREATED_SCRIPT: &str = r#"
     }
     return styleEl;
   }
+
+  var executedInjectedScripts = Object.create(null);
 
   window.__emberApplyCosmeticRules = function (selectors, genericHide, scriptlet) {
     genericHideDisabled = Boolean(genericHide);
@@ -184,12 +221,25 @@ pub const COSMETIC_DOCUMENT_CREATED_SCRIPT: &str = r#"
       }
     }
     if (scriptlet && typeof scriptlet === "string" && scriptlet.length > 0) {
+      if (!executedInjectedScripts[scriptlet]) {
+        executedInjectedScripts[scriptlet] = true;
+        try {
+          var fn = new Function(scriptlet);
+          fn();
+        } catch (_) {}
+      }
+    }
+  };
+
+  window.__emberApplyPreloadedCosmetic = function () {
+    if (window.__emberPreloadedCosmetic) {
       try {
-        var fn = new Function(scriptlet);
-        fn();
+        var pre = window.__emberPreloadedCosmetic;
+        window.__emberApplyCosmeticRules(pre.selectors || [], Boolean(pre.genericHide), pre.scriptlet || "");
       } catch (_) {}
     }
   };
+  window.__emberApplyPreloadedCosmetic();
 
   function collectFromNode(node) {
     if (genericHideDisabled || !node || node.nodeType !== 1) return;
@@ -241,10 +291,43 @@ pub const COSMETIC_DOCUMENT_CREATED_SCRIPT: &str = r#"
     }, 60);
   }
 
-  function startObserver() {
-    if (location.protocol === "http:" || location.protocol === "https:") {
-      postIpc("cosmetic_init:" + location.href);
+  var lastCosmeticHref = "";
+  function triggerCosmeticRefresh() {
+    if (location.protocol !== "http:" && location.protocol !== "https:") return;
+    if (location.href === lastCosmeticHref) return;
+    lastCosmeticHref = location.href;
+    postIpc("cosmetic_init:" + location.href);
+    if (document.documentElement) {
+      collectSubtree(document.documentElement);
+      scheduleFlush();
     }
+  }
+
+  function installSpaHooks() {
+    if (window.__emberCosmeticSpaHooked) return;
+    window.__emberCosmeticSpaHooked = true;
+    var wrapHistory = function (fnName) {
+      var orig = history[fnName];
+      if (typeof orig !== "function") return;
+      history[fnName] = function () {
+        var ret = orig.apply(this, arguments);
+        setTimeout(triggerCosmeticRefresh, 0);
+        return ret;
+      };
+    };
+    wrapHistory("pushState");
+    wrapHistory("replaceState");
+    window.addEventListener("popstate", triggerCosmeticRefresh);
+    window.addEventListener("hashchange", triggerCosmeticRefresh);
+    window.addEventListener("yt-navigate-finish", function () {
+      lastCosmeticHref = "";
+      triggerCosmeticRefresh();
+    });
+  }
+
+  function startObserver() {
+    installSpaHooks();
+    triggerCosmeticRefresh();
     if (document.documentElement) {
       collectSubtree(document.documentElement);
       scheduleFlush();
@@ -288,6 +371,52 @@ pub struct CosmeticResources {
     pub generichide: bool,
 }
 
+/// Category of adblock rule match recorded for `ember://adblock-debug`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdblockMatchKind {
+    NetworkBlocked,
+    NetworkRedirected,
+    CosmeticSelector,
+    ScriptletExecuted,
+}
+
+impl AdblockMatchKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NetworkBlocked => "network-block",
+            Self::NetworkRedirected => "redirect",
+            Self::CosmeticSelector => "cosmetic",
+            Self::ScriptletExecuted => "scriptlet",
+        }
+    }
+}
+
+/// A single recorded adblock match or scriptlet execution for debugging.
+#[derive(Debug, Clone)]
+pub struct AdblockDebugEntry {
+    pub kind: AdblockMatchKind,
+    pub rule_or_name: String,
+    pub target_url: String,
+    pub request_type: String,
+}
+
+/// Per-tab adblock debug state.
+#[derive(Debug, Clone, Default)]
+pub struct AdblockTabDebug {
+    pub page_url: String,
+    pub entries: VecDeque<AdblockDebugEntry>,
+}
+
+/// Result of a detailed network request check against the adblock engine.
+#[derive(Debug, Clone, Default)]
+pub struct NetworkMatchOutcome {
+    pub should_block: bool,
+    pub redirect: Option<String>,
+    pub matched_rule: Option<String>,
+}
+
+const MAX_DEBUG_ENTRIES_PER_TAB: usize = 200;
+
 /// Built-in adblocker powered by Brave's `adblock` (`adblock-rust`) engine.
 /// Thread-safe and cheap to clone across WebView2 event callbacks and background threads.
 #[derive(Clone)]
@@ -301,6 +430,8 @@ pub struct Adblocker {
     updating: Arc<AtomicBool>,
     send_dnt_gpc: Arc<AtomicBool>,
     block_third_party_cookies: Arc<AtomicBool>,
+    debug_logs: Arc<RwLock<HashMap<usize, AdblockTabDebug>>>,
+    last_web_tab_id: Arc<AtomicUsize>,
 }
 
 impl Default for Adblocker {
@@ -327,6 +458,8 @@ impl Adblocker {
             updating: Arc::new(AtomicBool::new(false)),
             send_dnt_gpc: Arc::new(AtomicBool::new(false)),
             block_third_party_cookies: Arc::new(AtomicBool::new(false)),
+            debug_logs: Arc::new(RwLock::new(HashMap::new())),
+            last_web_tab_id: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -410,6 +543,64 @@ impl Adblocker {
             .ok()
     }
 
+    /// Unix timestamp (seconds) of the last successful `uBlock filters - Quick fixes` download.
+    pub fn quick_fixes_last_updated_epoch(&self) -> Option<u64> {
+        let dir = self.filters_dir.as_deref()?;
+        fs::read_to_string(dir.join(LAST_QUICK_FIXES_UPDATED_FILE))
+            .ok()?
+            .trim()
+            .parse::<u64>()
+            .ok()
+    }
+
+    /// Resets per-tab debug entries when a tab begins a new top-level navigation.
+    pub fn reset_tab_debug(&self, tab_id: usize, page_url: &str) {
+        self.last_web_tab_id.store(tab_id, Ordering::Relaxed);
+        if let Ok(mut guard) = self.debug_logs.write() {
+            let entry = guard.entry(tab_id).or_default();
+            entry.page_url = page_url.to_owned();
+            entry.entries.clear();
+        }
+    }
+
+    /// Records a matched rule, redirect, cosmetic selector, or executed scriptlet for a tab.
+    pub fn record_debug_event(
+        &self,
+        tab_id: usize,
+        kind: AdblockMatchKind,
+        rule_or_name: String,
+        target_url: String,
+        request_type: String,
+    ) {
+        self.last_web_tab_id.store(tab_id, Ordering::Relaxed);
+        if let Ok(mut guard) = self.debug_logs.write() {
+            let tab_debug = guard.entry(tab_id).or_default();
+            if tab_debug.entries.len() >= MAX_DEBUG_ENTRIES_PER_TAB {
+                tab_debug.entries.pop_front();
+            }
+            tab_debug.entries.push_back(AdblockDebugEntry {
+                kind,
+                rule_or_name,
+                target_url,
+                request_type,
+            });
+        }
+    }
+
+    /// Returns a snapshot of matched rules and executed scriptlets for `tab_id`.
+    pub fn tab_debug_snapshot(&self, tab_id: usize) -> AdblockTabDebug {
+        self.debug_logs
+            .read()
+            .ok()
+            .and_then(|g| g.get(&tab_id).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Returns `(tab_id, snapshot)` for the most recently active web tab.
+    pub fn latest_tab_debug_snapshot(&self) -> (usize, AdblockTabDebug) {
+        let tab_id = self.last_web_tab_id.load(Ordering::Relaxed);
+        (tab_id, self.tab_debug_snapshot(tab_id))
+    }
     /// Configures the privacy signals applied inside the `WebResourceRequested` handler.
     pub fn set_privacy_flags(&self, send_dnt_gpc: bool, block_third_party_cookies: bool) {
         self.send_dnt_gpc.store(send_dnt_gpc, Ordering::Relaxed);
@@ -501,16 +692,15 @@ impl Adblocker {
         Some(now_allowlisted)
     }
 
-    /// Fast, non-blocking network request check suitable for WebView2's `WebResourceRequested`.
-    /// Performs zero disk or network I/O and holds no locks during engine evaluation.
-    pub fn check_network_request(
+    /// Detailed network match outcome including optional `$redirect` data URL and matched rule string.
+    pub fn check_network_request_detailed(
         &self,
         request_url: &str,
         source_url: &str,
         request_type: &str,
-    ) -> bool {
+    ) -> NetworkMatchOutcome {
         if !self.is_enabled() {
-            return false;
+            return NetworkMatchOutcome::default();
         }
 
         let req_trimmed = request_url.trim();
@@ -519,7 +709,7 @@ impl Adblocker {
             || req_trimmed.starts_with("ws://")
             || req_trimmed.starts_with("wss://"))
         {
-            return false;
+            return NetworkMatchOutcome::default();
         }
 
         let effective_source = if source_url.trim().starts_with("http://")
@@ -535,12 +725,12 @@ impl Adblocker {
             if !guard.is_empty() {
                 if let Some(source_host) = extract_normalized_host_str(effective_source) {
                     if guard.contains(source_host) {
-                        return false;
+                        return NetworkMatchOutcome::default();
                     }
                     if source_host.bytes().any(|b| b.is_ascii_uppercase()) {
                         let lower = source_host.to_ascii_lowercase();
                         if guard.contains(&lower) {
-                            return false;
+                            return NetworkMatchOutcome::default();
                         }
                     }
                 }
@@ -549,14 +739,40 @@ impl Adblocker {
 
         // Clone the `Arc<Engine>` pointer and drop the read lock before running the match.
         let Some(engine) = self.engine.read().ok().map(|guard| Arc::clone(&guard)) else {
-            return false;
+            return NetworkMatchOutcome::default();
         };
 
         let Ok(request) = Request::new(req_trimmed, effective_source, request_type, "get") else {
-            return false;
+            return NetworkMatchOutcome::default();
         };
 
-        engine.check_network_request(&request).should_block()
+        let result = engine.check_network_request(&request);
+        let should_block = result.should_block();
+        let matched_rule = if should_block {
+            result
+                .filter
+                .as_ref()
+                .map(|f| f.raw_line.clone().unwrap_or_else(|| f.to_string()))
+        } else {
+            None
+        };
+        NetworkMatchOutcome {
+            should_block,
+            redirect: if should_block { result.redirect } else { None },
+            matched_rule,
+        }
+    }
+
+    /// Fast, non-blocking network request check suitable for WebView2's `WebResourceRequested`.
+    /// Performs zero disk or network I/O and holds no locks during engine evaluation.
+    pub fn check_network_request(
+        &self,
+        request_url: &str,
+        source_url: &str,
+        request_type: &str,
+    ) -> bool {
+        self.check_network_request_detailed(request_url, source_url, request_type)
+            .should_block
     }
 
     /// Convenience helper for top-level navigation checks.
@@ -636,12 +852,11 @@ impl Adblocker {
             .name(String::from("ember-adblock-updater"))
             .spawn(move || loop {
                 let (easylist, easyprivacy) = this.lists_enabled();
-                let due = this
-                    .filters_dir
-                    .as_deref()
-                    .is_some_and(|dir| should_refresh_filters(dir, easylist, easyprivacy));
-                if due {
-                    this.run_rebuild(true);
+                if let Some(dir) = this.filters_dir.as_deref() {
+                    let plan = refresh_plan_for_dir(dir, easylist, easyprivacy);
+                    if plan.standard || plan.quick_fixes {
+                        this.run_rebuild_with_plan(plan);
+                    }
                 }
                 thread::sleep(Duration::from_secs(3600));
             })
@@ -662,24 +877,44 @@ impl Adblocker {
         let Some(dir) = self.filters_dir.clone() else {
             return;
         };
+        let (easylist, easyprivacy) = self.lists_enabled();
+        let plan = if force_download {
+            RefreshPlan {
+                standard: true,
+                quick_fixes: true,
+            }
+        } else {
+            refresh_plan_for_dir(&dir, easylist, easyprivacy)
+        };
+        self.run_rebuild_with_plan(plan);
+    }
+
+    fn run_rebuild_with_plan(&self, mut plan: RefreshPlan) {
+        let Some(dir) = self.filters_dir.clone() else {
+            return;
+        };
         if self.updating.swap(true, Ordering::SeqCst) {
             return;
         }
-        let mut force = force_download;
         loop {
             let (easylist, easyprivacy) = self.lists_enabled();
-            let missing = (easylist && !dir.join(EASYLIST_CACHE_FILE).is_file())
-                || (easyprivacy && !dir.join(EASYPRIVACY_CACHE_FILE).is_file());
-            let download = (force || missing) && (easylist || easyprivacy);
-            force = false;
+            let download_standard = plan.standard;
+            let download_quick_fixes = plan.quick_fixes;
 
-            let engine = if download {
-                download_and_compile_filters(&dir, easylist, easyprivacy)
+            let engine = if download_standard || download_quick_fixes {
+                download_and_compile_filters(
+                    &dir,
+                    easylist,
+                    easyprivacy,
+                    download_standard,
+                    download_quick_fixes,
+                )
             } else {
                 Some(compile_and_persist_engine(&dir, easylist, easyprivacy))
             };
 
             if self.lists_enabled() != (easylist, easyprivacy) {
+                plan = refresh_plan_for_dir(&dir, easylist, easyprivacy);
                 continue;
             }
             if let Some(engine) = engine {
@@ -716,6 +951,33 @@ pub fn map_webview2_resource_context(raw_context: i32, is_subframe_document: boo
         15 => "csp_report",
         _ => "other",
     }
+}
+
+/// Builds a tiny synchronous document-start preload script injected via
+/// `AddScriptToExecuteOnDocumentCreated` on navigation start so `COSMETIC_DOCUMENT_CREATED_SCRIPT`
+/// applies initial selectors and executes scriptlets before page `<script>` tags run.
+pub fn build_document_start_preload_script(resources: &CosmeticResources) -> String {
+    let mut script = String::from("window.__emberPreloadedCosmetic={selectors:[");
+    for (idx, sel) in resources.hide_selectors.iter().enumerate() {
+        if idx > 0 {
+            script.push(',');
+        }
+        script.push('"');
+        push_js_escaped(&mut script, sel);
+        script.push('"');
+    }
+    script.push_str("],genericHide:");
+    script.push_str(if resources.generichide {
+        "true"
+    } else {
+        "false"
+    });
+    script.push_str(",scriptlet:\"");
+    push_js_escaped(&mut script, &resources.injected_script);
+    script.push_str(
+        "\"};if(window.__emberApplyPreloadedCosmetic){window.__emberApplyPreloadedCosmetic();}",
+    );
+    script
 }
 
 /// Builds a JavaScript invocation string that applies initial hostname-specific cosmetic selectors
@@ -829,27 +1091,44 @@ pub fn extract_normalized_host(url_or_host: &str) -> Option<String> {
     extract_normalized_host_str(url_or_host).map(|h| h.to_ascii_lowercase())
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct RefreshPlan {
+    standard: bool,
+    quick_fixes: bool,
+}
+
+fn trusted_parse_options() -> ParseOptions {
+    ParseOptions {
+        permissions: resources::TRUSTED_SCRIPTLET_PERMISSION,
+        ..ParseOptions::default()
+    }
+}
+
 fn compile_engine_from_rules<'a>(rules: impl IntoIterator<Item = &'a str>) -> Engine {
-    let mut filter_set = FilterSet::new(false);
+    let mut filter_set = FilterSet::new(true);
     let combined = rules.into_iter().collect::<Vec<_>>().join("\n");
-    filter_set.add_filter_list(combined, ParseOptions::default());
-    Engine::new_with_filter_set(filter_set)
+    filter_set.add_filter_list(combined, trusted_parse_options());
+    let mut engine = Engine::new_with_filter_set(filter_set);
+    engine.use_resources(resources::builtin_resources());
+    engine
 }
 
 /// Serialized-engine cache file name for a given selection of filter lists.
 fn engine_cache_name(easylist: bool, easyprivacy: bool) -> &'static str {
     match (easylist, easyprivacy) {
         (true, true) => ENGINE_CACHE_FILE,
-        (true, false) => "engine-easylist.dat",
-        (false, true) => "engine-easyprivacy.dat",
-        (false, false) => "engine-bootstrap.dat",
+        (true, false) => "engine-easylist-v2.dat",
+        (false, true) => "engine-easyprivacy-v2.dat",
+        (false, false) => "engine-bootstrap-v2.dat",
     }
 }
 
-/// Compiles the embedded bootstrap rules plus whichever enabled lists are cached on disk.
+/// Compiles the embedded bootstrap rules, uBlock Origin lists, and whichever EasyList/EasyPrivacy
+/// lists are enabled and cached on disk.
 fn compile_engine_from_cache(filters_dir: &Path, easylist: bool, easyprivacy: bool) -> Engine {
-    let mut filter_set = FilterSet::new(false);
-    filter_set.add_filter_list(DEFAULT_BOOTSTRAP_RULES.join("\n"), ParseOptions::default());
+    let mut filter_set = FilterSet::new(true);
+    let trusted_opts = trusted_parse_options();
+    filter_set.add_filter_list(DEFAULT_BOOTSTRAP_RULES.join("\n"), trusted_opts);
     if easylist {
         if let Ok(text) = fs::read_to_string(filters_dir.join(EASYLIST_CACHE_FILE)) {
             filter_set.add_filter_list(text, ParseOptions::default());
@@ -860,7 +1139,20 @@ fn compile_engine_from_cache(filters_dir: &Path, easylist: bool, easyprivacy: bo
             filter_set.add_filter_list(text, ParseOptions::default());
         }
     }
-    Engine::new_with_filter_set(filter_set)
+    // uBlock Origin trusted lists (core, unbreak, quick-fixes, annoyances)
+    for file in [
+        UBLOCK_FILTERS_CACHE_FILE,
+        UBLOCK_UNBREAK_CACHE_FILE,
+        UBLOCK_QUICK_FIXES_CACHE_FILE,
+        UBLOCK_ANNOYANCES_CACHE_FILE,
+    ] {
+        if let Ok(text) = fs::read_to_string(filters_dir.join(file)) {
+            filter_set.add_filter_list(text, trusted_opts);
+        }
+    }
+    let mut engine = Engine::new_with_filter_set(filter_set);
+    engine.use_resources(resources::builtin_resources());
+    engine
 }
 
 fn persist_engine(filters_dir: &Path, easylist: bool, easyprivacy: bool, engine: &Engine) {
@@ -884,6 +1176,7 @@ fn load_or_bootstrap_engine(filters_dir: &Path, easylist: bool, easyprivacy: boo
         if !bytes.is_empty() {
             let mut engine = Engine::default();
             if engine.deserialize(&bytes).is_ok() {
+                engine.use_resources(resources::builtin_resources());
                 return engine;
             }
         }
@@ -894,62 +1187,107 @@ fn load_or_bootstrap_engine(filters_dir: &Path, easylist: bool, easyprivacy: boo
     compile_engine_from_rules(DEFAULT_BOOTSTRAP_RULES.iter().copied())
 }
 
-fn should_refresh_filters(filters_dir: &Path, easylist: bool, easyprivacy: bool) -> bool {
-    if !easylist && !easyprivacy {
-        return false;
-    }
-    let engine_missing = !filters_dir
-        .join(engine_cache_name(easylist, easyprivacy))
-        .is_file();
-    let easylist_missing = easylist && !filters_dir.join(EASYLIST_CACHE_FILE).is_file();
-    let easyprivacy_missing = easyprivacy && !filters_dir.join(EASYPRIVACY_CACHE_FILE).is_file();
-    if engine_missing || easylist_missing || easyprivacy_missing {
-        return true;
-    }
-
-    let last_updated_path = filters_dir.join(LAST_UPDATED_FILE);
-    let Ok(contents) = fs::read_to_string(last_updated_path) else {
+fn is_timestamp_stale(path: &Path, max_age: Duration) -> bool {
+    let Ok(contents) = fs::read_to_string(path) else {
         return true;
     };
     let Ok(last_epoch) = contents.trim().parse::<u64>() else {
         return true;
     };
-
     let now_epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-
-    now_epoch.saturating_sub(last_epoch) >= FILTER_UPDATE_INTERVAL.as_secs()
+    now_epoch.saturating_sub(last_epoch) >= max_age.as_secs()
 }
 
-/// Downloads the enabled lists, compiles + serializes the engine and records the update time.
+fn refresh_plan_for_dir(filters_dir: &Path, easylist: bool, easyprivacy: bool) -> RefreshPlan {
+    let engine_missing = !filters_dir
+        .join(engine_cache_name(easylist, easyprivacy))
+        .is_file();
+    let standard_missing = (easylist && !filters_dir.join(EASYLIST_CACHE_FILE).is_file())
+        || (easyprivacy && !filters_dir.join(EASYPRIVACY_CACHE_FILE).is_file())
+        || !filters_dir.join(UBLOCK_FILTERS_CACHE_FILE).is_file()
+        || !filters_dir.join(UBLOCK_UNBREAK_CACHE_FILE).is_file()
+        || !filters_dir.join(UBLOCK_ANNOYANCES_CACHE_FILE).is_file();
+    let quick_fixes_missing = !filters_dir.join(UBLOCK_QUICK_FIXES_CACHE_FILE).is_file();
+
+    let standard_stale =
+        is_timestamp_stale(&filters_dir.join(LAST_UPDATED_FILE), FILTER_UPDATE_INTERVAL);
+    let quick_fixes_stale = is_timestamp_stale(
+        &filters_dir.join(LAST_QUICK_FIXES_UPDATED_FILE),
+        QUICK_FIXES_UPDATE_INTERVAL,
+    );
+
+    RefreshPlan {
+        standard: engine_missing || standard_missing || standard_stale,
+        quick_fixes: engine_missing || quick_fixes_missing || quick_fixes_stale,
+    }
+}
+
+/// Downloads the enabled lists, compiles + serializes the engine and records update timestamps.
 /// Returns `None` if every requested download failed.
 fn download_and_compile_filters(
     filters_dir: &Path,
     easylist: bool,
     easyprivacy: bool,
+    download_standard: bool,
+    download_quick_fixes: bool,
 ) -> Option<Engine> {
-    let ok_el = easylist
-        && platform::download_url_to_file(EASYLIST_URL, &filters_dir.join(EASYLIST_CACHE_FILE));
-    let ok_ep = easyprivacy
-        && platform::download_url_to_file(
-            EASYPRIVACY_URL,
-            &filters_dir.join(EASYPRIVACY_CACHE_FILE),
-        );
-    if !ok_el && !ok_ep {
-        return None;
-    }
-
-    let engine = compile_and_persist_engine(filters_dir, easylist, easyprivacy);
-
+    let mut any_ok = false;
     let now_epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let _ = fs::write(filters_dir.join(LAST_UPDATED_FILE), now_epoch.to_string());
 
-    Some(engine)
+    if download_standard {
+        let ok_el = easylist
+            && platform::download_url_to_file(EASYLIST_URL, &filters_dir.join(EASYLIST_CACHE_FILE));
+        let ok_ep = easyprivacy
+            && platform::download_url_to_file(
+                EASYPRIVACY_URL,
+                &filters_dir.join(EASYPRIVACY_CACHE_FILE),
+            );
+        let ok_uf = platform::download_url_to_file(
+            UBLOCK_FILTERS_URL,
+            &filters_dir.join(UBLOCK_FILTERS_CACHE_FILE),
+        );
+        let ok_uu = platform::download_url_to_file(
+            UBLOCK_UNBREAK_URL,
+            &filters_dir.join(UBLOCK_UNBREAK_CACHE_FILE),
+        );
+        let ok_ua = platform::download_url_to_file(
+            UBLOCK_ANNOYANCES_URL,
+            &filters_dir.join(UBLOCK_ANNOYANCES_CACHE_FILE),
+        );
+        if ok_el || ok_ep || ok_uf || ok_uu || ok_ua {
+            any_ok = true;
+            let _ = fs::write(filters_dir.join(LAST_UPDATED_FILE), now_epoch.to_string());
+        }
+    }
+
+    if download_quick_fixes
+        && platform::download_url_to_file(
+            UBLOCK_QUICK_FIXES_URL,
+            &filters_dir.join(UBLOCK_QUICK_FIXES_CACHE_FILE),
+        )
+    {
+        any_ok = true;
+        let _ = fs::write(
+            filters_dir.join(LAST_QUICK_FIXES_UPDATED_FILE),
+            now_epoch.to_string(),
+        );
+    }
+
+    if !any_ok {
+        return None;
+    }
+
+    Some(compile_and_persist_engine(
+        filters_dir,
+        easylist,
+        easyprivacy,
+    ))
 }
 fn load_allowlist_from_disk(path: &Path) -> HashSet<String> {
     let Ok(contents) = fs::read_to_string(path) else {
@@ -974,31 +1312,44 @@ pub fn measure_process_tree_ram_mb() -> f64 {
 }
 
 /// Attaches native WebView2 `WebResourceRequested` interception and `AddScriptToExecuteOnDocumentCreated`
-/// cosmetic filtering to a tab's `wry::WebView`.
-pub fn attach_webview_adblocker<F>(webview: &wry::WebView, adblocker: Adblocker, on_blocked: F)
-where
+/// cosmetic & scriptlet filtering to a tab's `wry::WebView`.
+pub fn attach_webview_adblocker<F>(
+    webview: &wry::WebView,
+    tab_id: usize,
+    adblocker: Adblocker,
+    on_blocked: F,
+) where
     F: Fn() + Send + Sync + 'static,
 {
-    platform::attach_webview_adblocker(webview, adblocker, on_blocked);
+    platform::attach_webview_adblocker(webview, tab_id, adblocker, on_blocked);
 }
 
 #[cfg(target_os = "windows")]
 mod platform {
     use core::ffi::c_void;
-    use std::{fs, path::Path, ptr};
+    use std::{
+        fs,
+        path::Path,
+        ptr,
+        sync::{Arc, Mutex, RwLock},
+    };
 
     use webview2_com::{
         take_pwstr, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
         Microsoft::Web::WebView2::Win32::{
-            ICoreWebView2_2, COREWEBVIEW2_WEB_RESOURCE_CONTEXT,
+            ICoreWebView2, ICoreWebView2_2, ICoreWebView2_22, COREWEBVIEW2_WEB_RESOURCE_CONTEXT,
             COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+            COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
         },
-        WebResourceRequestedEventHandler,
+        NavigationStartingEventHandler, WebResourceRequestedEventHandler,
     };
     use windows_core::{Interface, HSTRING, PWSTR};
     use wry::WebViewExtWindows;
 
-    use super::{map_webview2_resource_context, Adblocker, COSMETIC_DOCUMENT_CREATED_SCRIPT};
+    use super::{
+        build_document_start_preload_script, map_webview2_resource_context, AdblockMatchKind,
+        Adblocker, COSMETIC_DOCUMENT_CREATED_SCRIPT,
+    };
 
     #[link(name = "urlmon", kind = "raw-dylib")]
     extern "system" {
@@ -1163,8 +1514,80 @@ mod platform {
         }
     }
 
-    pub fn attach_webview_adblocker<F>(webview: &wry::WebView, adblocker: Adblocker, on_blocked: F)
-    where
+    fn update_dynamic_preload_script(
+        core_webview: &ICoreWebView2,
+        last_script_id: &Arc<Mutex<Option<String>>>,
+        adblocker: &Adblocker,
+        tab_id: usize,
+        url: &str,
+    ) {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return;
+        }
+        let resources = adblocker.cosmetic_resources_for_url(url);
+        for sel in resources.hide_selectors.iter().take(40) {
+            adblocker.record_debug_event(
+                tab_id,
+                AdblockMatchKind::CosmeticSelector,
+                sel.clone(),
+                url.to_owned(),
+                String::from("cosmetic"),
+            );
+        }
+        let preload_js = build_document_start_preload_script(&resources);
+        let prev_id = last_script_id.lock().ok().and_then(|mut g| g.take());
+        if let Some(id) = prev_id {
+            let id_hstr = HSTRING::from(id);
+            // SAFETY: Removes previously registered preload script before adding the new URL's preload script.
+            unsafe {
+                let _ = core_webview.RemoveScriptToExecuteOnDocumentCreated(&id_hstr);
+            }
+        }
+        let script_hstr = HSTRING::from(preload_js);
+        let id_slot = Arc::clone(last_script_id);
+        let handler =
+            AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(move |hr, id| {
+                if hr.is_ok() && !id.is_empty() {
+                    if let Ok(mut guard) = id_slot.lock() {
+                        *guard = Some(id.to_string());
+                    }
+                }
+                Ok(())
+            }));
+        // SAFETY: Registers the document-start preload script on `core_webview` for this navigation.
+        unsafe {
+            let _ = core_webview.AddScriptToExecuteOnDocumentCreated(&script_hstr, &handler);
+        }
+    }
+
+    fn redirect_content_type(data_url: &str) -> &'static str {
+        if let Some(rest) = data_url.strip_prefix("data:") {
+            let header = rest.split(',').next().unwrap_or("");
+            let mime = header.split(';').next().unwrap_or("").trim();
+            if mime.eq_ignore_ascii_case("application/javascript")
+                || mime.eq_ignore_ascii_case("text/javascript")
+            {
+                return "Content-Type: application/javascript\r\nAccess-Control-Allow-Origin: *";
+            }
+            if mime.eq_ignore_ascii_case("text/css") {
+                return "Content-Type: text/css\r\nAccess-Control-Allow-Origin: *";
+            }
+            if mime.eq_ignore_ascii_case("text/html") {
+                return "Content-Type: text/html\r\nAccess-Control-Allow-Origin: *";
+            }
+            if mime.eq_ignore_ascii_case("image/gif") {
+                return "Content-Type: image/gif\r\nAccess-Control-Allow-Origin: *";
+            }
+        }
+        "Content-Type: text/plain\r\nAccess-Control-Allow-Origin: *"
+    }
+
+    pub fn attach_webview_adblocker<F>(
+        webview: &wry::WebView,
+        tab_id: usize,
+        adblocker: Adblocker,
+        on_blocked: F,
+    ) where
         F: Fn() + Send + Sync + 'static,
     {
         let controller = webview.controller();
@@ -1179,7 +1602,8 @@ mod platform {
             return;
         };
 
-        // 1. Register cosmetic filtering bootstrap script via `AddScriptToExecuteOnDocumentCreated`
+        // 1. Register cosmetic & scriptlet bootstrap script via `AddScriptToExecuteOnDocumentCreated`
+        // (runs on every document & iframe at document-start).
         let script_hstring = HSTRING::from(COSMETIC_DOCUMENT_CREATED_SCRIPT);
         let completion_handler =
             AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(|_, _| Ok(())));
@@ -1189,23 +1613,108 @@ mod platform {
                 .AddScriptToExecuteOnDocumentCreated(&script_hstring, &completion_handler);
         }
 
-        // 2. Register `AddWebResourceRequestedFilter("*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL)`
-        let filter = HSTRING::from("*");
-        // SAFETY: Registers the wildcard resource interception filter on the WebView2 instance.
-        unsafe {
-            let _ = core_webview
-                .AddWebResourceRequestedFilter(&filter, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+        let current_doc_url = Arc::new(RwLock::new(String::new()));
+        let last_preload_script_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        // 2. Hook `NavigationStarting` (top-level) and `FrameNavigationStarting` (iframes) so
+        // `injected_script` & initial cosmetic selectors are preloaded at document-start.
+        {
+            let adblocker_nav = adblocker.clone();
+            let doc_url_nav = Arc::clone(&current_doc_url);
+            let script_id_nav = Arc::clone(&last_preload_script_id);
+            let mut nav_token: i64 = 0;
+            // SAFETY: Registers `NavigationStarting` COM callback for the lifetime of `core_webview`.
+            unsafe {
+                let _ = core_webview.add_NavigationStarting(
+                    &NavigationStartingEventHandler::create(Box::new(move |sender, args| {
+                        let Some(args) = args else {
+                            return Ok(());
+                        };
+                        let mut uri_pwstr = PWSTR::null();
+                        if args.Uri(&mut uri_pwstr).is_ok() {
+                            let uri = take_pwstr(uri_pwstr);
+                            if uri.starts_with("http://") || uri.starts_with("https://") {
+                                if let Ok(mut guard) = doc_url_nav.write() {
+                                    guard.clone_from(&uri);
+                                }
+                                adblocker_nav.reset_tab_debug(tab_id, &uri);
+                                if let Some(cw) = sender {
+                                    update_dynamic_preload_script(
+                                        &cw,
+                                        &script_id_nav,
+                                        &adblocker_nav,
+                                        tab_id,
+                                        &uri,
+                                    );
+                                }
+                            }
+                        }
+                        Ok(())
+                    })),
+                    &mut nav_token,
+                );
+            }
+        }
+        {
+            let adblocker_frame = adblocker.clone();
+            let script_id_frame = Arc::clone(&last_preload_script_id);
+            let mut frame_token: i64 = 0;
+            // SAFETY: Registers `FrameNavigationStarting` COM callback for iframe document-start preloading.
+            unsafe {
+                let _ = core_webview.add_FrameNavigationStarting(
+                    &NavigationStartingEventHandler::create(Box::new(move |sender, args| {
+                        let Some(args) = args else {
+                            return Ok(());
+                        };
+                        let mut uri_pwstr = PWSTR::null();
+                        if args.Uri(&mut uri_pwstr).is_ok() {
+                            let uri = take_pwstr(uri_pwstr);
+                            if let Some(cw) = sender {
+                                update_dynamic_preload_script(
+                                    &cw,
+                                    &script_id_frame,
+                                    &adblocker_frame,
+                                    tab_id,
+                                    &uri,
+                                );
+                            }
+                        }
+                        Ok(())
+                    })),
+                    &mut frame_token,
+                );
+            }
         }
 
-        // 3. Register fast, non-blocking `WebResourceRequested` handler
+        // 3. Register `AddWebResourceRequestedFilterWithRequestSourceKinds` (covering pages + workers)
+        // when `ICoreWebView2_22` is available, falling back to `AddWebResourceRequestedFilter`.
+        let filter = HSTRING::from("*");
+        if let Ok(core_webview22) = core_webview.cast::<ICoreWebView2_22>() {
+            // SAFETY: Registers wildcard interception for both Document and Worker request source kinds.
+            unsafe {
+                let _ = core_webview22.AddWebResourceRequestedFilterWithRequestSourceKinds(
+                    &filter,
+                    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                    COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+                );
+            }
+        } else {
+            // SAFETY: Fallback wildcard resource interception filter on older WebView2 runtimes.
+            unsafe {
+                let _ = core_webview
+                    .AddWebResourceRequestedFilter(&filter, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+            }
+        }
+
+        // 4. Register fast, non-blocking `WebResourceRequested` handler
         let mut token: i64 = 0;
         let status_phrase = HSTRING::from("No Content");
+        let ok_phrase = HSTRING::from("OK");
         let cors_headers = HSTRING::from("Access-Control-Allow-Origin: *");
         let hstr_dnt = HSTRING::from("DNT");
         let hstr_gpc = HSTRING::from("Sec-GPC");
         let hstr_one = HSTRING::from("1");
         let hstr_cookie = HSTRING::from("Cookie");
-        let current_doc_url = std::sync::Arc::new(std::sync::RwLock::new(String::new()));
 
         // SAFETY: Registers the COM event handler for `WebResourceRequested` for the lifetime of `core_webview`.
         unsafe {
@@ -1283,11 +1792,42 @@ mod platform {
                         && source_url != request_url;
                     let request_type = map_webview2_resource_context(context.0, is_subframe_doc);
 
-                    if adblocker.check_network_request(&request_url, &source_url, request_type) {
-                        if let Ok(blocked_response) =
+                    let outcome = adblocker.check_network_request_detailed(
+                        &request_url,
+                        &source_url,
+                        request_type,
+                    );
+                    if outcome.should_block {
+                        let rule_label = outcome
+                            .matched_rule
+                            .clone()
+                            .unwrap_or_else(|| String::from("(matched network rule)"));
+                        if let Some(redirect_data) = outcome.redirect.as_deref() {
+                            let headers = HSTRING::from(redirect_content_type(redirect_data));
+                            if let Ok(redirect_resp) =
+                                env.CreateWebResourceResponse(None, 200, &ok_phrase, &headers)
+                            {
+                                let _ = args.SetResponse(&redirect_resp);
+                                adblocker.record_debug_event(
+                                    tab_id,
+                                    AdblockMatchKind::NetworkRedirected,
+                                    rule_label,
+                                    request_url,
+                                    request_type.to_owned(),
+                                );
+                                on_blocked();
+                            }
+                        } else if let Ok(blocked_response) =
                             env.CreateWebResourceResponse(None, 204, &status_phrase, &cors_headers)
                         {
                             let _ = args.SetResponse(&blocked_response);
+                            adblocker.record_debug_event(
+                                tab_id,
+                                AdblockMatchKind::NetworkBlocked,
+                                rule_label,
+                                request_url,
+                                request_type.to_owned(),
+                            );
                             on_blocked();
                         }
                     } else {
@@ -1333,6 +1873,7 @@ mod platform {
 
     pub fn attach_webview_adblocker<F>(
         _webview: &wry::WebView,
+        _tab_id: usize,
         _adblocker: Adblocker,
         _on_blocked: F,
     ) where
@@ -1510,5 +2051,32 @@ mod tests {
         assert_eq!(blocked, 4_000);
         // Ensure per-request match time is well under 500 Âµs even in unoptimized debug builds
         assert!(avg_ns < 500_000);
+    }
+
+    #[test]
+    fn test_youtube_scriptlet_injection_and_preload() {
+        let blocker = Adblocker::from_rules(&[
+            "youtube.com##+js(json-prune, playerResponse.adPlacements adPlacements)",
+            "youtube.com##+js(set-constant, ytInitialPlayerResponse.adPlacements, undefined)",
+            "youtube.com##+js(trusted-replace-xhr-response, /\"adPlacements\":\\s*\\[[^\\]]*\\]/, \"\", /youtubei\\/v1\\/player/)",
+            "youtube.com##ytd-ad-slot-renderer",
+        ]);
+
+        let resources =
+            blocker.cosmetic_resources_for_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+        assert!(resources
+            .hide_selectors
+            .iter()
+            .any(|s| s == "ytd-ad-slot-renderer"));
+        assert!(resources.injected_script.contains("emberJsonPrune"));
+        assert!(resources.injected_script.contains("emberSetConstant"));
+        assert!(resources
+            .injected_script
+            .contains("emberTrustedReplaceXhrResponse"));
+
+        let preload = build_document_start_preload_script(&resources);
+        assert!(preload.contains("window.__emberPreloadedCosmetic="));
+        assert!(preload.contains("emberJsonPrune"));
+        assert!(preload.contains("window.__emberApplyPreloadedCosmetic"));
     }
 }

@@ -109,6 +109,7 @@ impl TabManager {
             "ember://newtab" => String::from("New Tab"),
             "ember://history" => String::from("History"),
             "ember://bookmarks" => String::from("Bookmarks"),
+            "ember://downloads" => String::from("Downloads"),
             "ember://settings" => String::from("Settings"),
             other => other.to_owned(),
         };
@@ -134,6 +135,26 @@ impl TabManager {
         }
 
         id
+    }
+
+    /// Opens an internal page (`ember://settings`, `ember://history`, `ember://bookmarks`,
+    /// `ember://downloads`) in a new foreground tab, or switches to an already-open tab
+    /// displaying that canonical URL instead of opening a duplicate.
+    /// Returns `(tab_id, created_new)`.
+    pub fn open_or_focus_internal_page(&mut self, url: &str) -> (usize, bool) {
+        let canonical = crate::pages::canonical_internal_url(url).unwrap_or(url.trim());
+        if let Some(existing_id) = self
+            .tabs
+            .iter()
+            .find(|t| crate::pages::canonical_internal_url(&t.url) == Some(canonical))
+            .map(|t| t.id)
+        {
+            self.switch_to(existing_id);
+            (existing_id, false)
+        } else {
+            let new_id = self.create_tab(canonical, true);
+            (new_id, true)
+        }
     }
 
     /// Duplicates an existing tab right next to the source tab, preserving URL, title, favicon, and scroll position.
@@ -562,9 +583,28 @@ impl TabManager {
     }
 }
 
-/// Derives a default `<origin>/favicon.ico` URL for `http://` and `https://` URLs.
+/// Derives a default `<origin>/favicon.ico` URL for `http://` and `https://` URLs,
+/// or an inline SVG icon for internal `ember://` pages (`settings`, `history`, `bookmarks`, `downloads`).
 pub fn derive_default_favicon(url: &str) -> Option<String> {
     let trimmed = url.trim();
+    if let Some(canonical) = crate::pages::canonical_internal_url(trimmed) {
+        return match canonical {
+            crate::pages::SETTINGS_URL => Some(String::from(
+                "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%235f6368'%3E%3Cpath d='M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1112 8.4a3.6 3.6 0 010 7.2z'/%3E%3C/svg%3E",
+            )),
+            crate::pages::HISTORY_URL => Some(String::from(
+                "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%235f6368'%3E%3Cpath d='M13 3a9 9 0 00-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0013 21a9 9 0 000-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z'/%3E%3C/svg%3E",
+            )),
+            crate::pages::BOOKMARKS_URL => Some(String::from(
+                "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%235f6368'%3E%3Cpath d='M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z'/%3E%3C/svg%3E",
+            )),
+            crate::pages::DOWNLOADS_URL => Some(String::from(
+                "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%235f6368'%3E%3Cpath d='M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z'/%3E%3C/svg%3E",
+            )),
+            _ => None,
+        };
+    }
+
     let rest = if let Some(r) = trimmed.strip_prefix("https://") {
         Some(("https://", r))
     } else {
@@ -729,5 +769,68 @@ mod tests {
             manager.active_tab_needs_webview(),
             Some((bg_tab, String::from("https://docs.rs")))
         );
+    }
+
+    #[test]
+    fn test_open_or_focus_existing_internal_page() {
+        let mut manager = TabManager::new(Duration::from_secs(60));
+        let main_tab = manager.create_tab("https://example.com", true);
+        assert_eq!(manager.summaries().len(), 1);
+        assert_eq!(manager.active_tab_id(), main_tab);
+
+        // Opening ember://settings opens a new tab with title "Settings" and settings favicon
+        let (settings_tab, created) = manager.open_or_focus_internal_page("ember://settings");
+        assert!(created);
+        assert_ne!(settings_tab, main_tab);
+        assert_eq!(manager.summaries().len(), 2);
+        assert_eq!(manager.active_tab_id(), settings_tab);
+        let tab = manager.get_tab(settings_tab).expect("settings tab");
+        assert_eq!(tab.title, "Settings");
+        assert_eq!(tab.url, "ember://settings");
+        assert!(tab
+            .favicon_url
+            .as_deref()
+            .is_some_and(|u| u.starts_with("data:image/svg+xml")));
+
+        // Original tab remains intact
+        assert_eq!(
+            manager.get_tab(main_tab).map(|t| t.url.as_str()),
+            Some("https://example.com")
+        );
+
+        // Switch back to main_tab, then request ember://settings again (even with trailing slash/casing)
+        assert!(manager.switch_to(main_tab));
+        assert_eq!(manager.active_tab_id(), main_tab);
+
+        let (focused_id, created_again) = manager.open_or_focus_internal_page("EMBER://settings/");
+        assert!(!created_again);
+        assert_eq!(focused_id, settings_tab);
+        assert_eq!(manager.summaries().len(), 2);
+        assert_eq!(manager.active_tab_id(), settings_tab);
+
+        // Same singleton behavior for history, bookmarks, and downloads
+        let (hist_id, c1) = manager.open_or_focus_internal_page("ember://history");
+        let (book_id, c2) = manager.open_or_focus_internal_page("ember://bookmarks");
+        let (dl_id, c3) = manager.open_or_focus_internal_page("ember://downloads");
+        assert!(c1 && c2 && c3);
+        assert_eq!(manager.summaries().len(), 5);
+
+        assert_eq!(
+            manager.open_or_focus_internal_page("ember://history"),
+            (hist_id, false)
+        );
+        assert_eq!(
+            manager.open_or_focus_internal_page("ember://bookmarks"),
+            (book_id, false)
+        );
+        assert_eq!(
+            manager.open_or_focus_internal_page("ember://downloads"),
+            (dl_id, false)
+        );
+        assert_eq!(manager.summaries().len(), 5);
+
+        // Closing the Settings tab works normally
+        assert_eq!(manager.close_tab(settings_tab), CloseTabOutcome::Closed);
+        assert_eq!(manager.summaries().len(), 4);
     }
 }

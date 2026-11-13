@@ -98,6 +98,7 @@ pub struct BrowserSettings {
     pub send_dnt_and_gpc: bool,
     pub https_only_mode: bool,
     pub tab_animations_enabled: bool,
+    pub search_suggestions_enabled: bool,
 }
 
 impl Default for BrowserSettings {
@@ -119,6 +120,7 @@ impl Default for BrowserSettings {
             send_dnt_and_gpc: true,
             https_only_mode: false,
             tab_animations_enabled: true,
+            search_suggestions_enabled: false,
         }
     }
 }
@@ -154,7 +156,8 @@ impl BrowserSettings {
              [privacy]\n\
              block_third_party_cookies = {}\n\
              send_dnt_and_gpc = {}\n\
-             https_only_mode = {}\n",
+             https_only_mode = {}\n\
+             search_suggestions_enabled = {}\n",
             self.search_engine.as_str(),
             escape_toml_string(&self.homepage),
             self.theme.as_str(),
@@ -166,6 +169,7 @@ impl BrowserSettings {
             self.block_third_party_cookies,
             self.send_dnt_and_gpc,
             self.https_only_mode,
+            self.search_suggestions_enabled,
         )
     }
 
@@ -245,6 +249,11 @@ impl BrowserSettings {
                 ("privacy" | "", "https_only_mode") => {
                     if let Some(b) = parse_toml_bool(val) {
                         settings.https_only_mode = b;
+                    }
+                }
+                ("privacy" | "", "search_suggestions_enabled") => {
+                    if let Some(b) = parse_toml_bool(val) {
+                        settings.search_suggestions_enabled = b;
                     }
                 }
                 _ => {}

@@ -7,6 +7,7 @@ pub mod downloads;
 pub mod find;
 pub mod pages;
 pub mod permissions;
+pub mod popup;
 pub mod privacy;
 pub mod settings;
 pub mod storage;

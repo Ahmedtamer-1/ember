@@ -9,6 +9,8 @@
     color-scheme: light dark;
     --tab-anim-duration: 180ms;
     --tab-anim-ease: cubic-bezier(0.2, 0, 0, 1);
+    --btn-anim-duration: 120ms;
+    --btn-anim-ease: cubic-bezier(0.2, 0, 0, 1);
     --tab-max-width: 240px;
     --tab-min-width: 36px;
     --tab-width: 240px;
@@ -152,26 +154,41 @@
   @media (prefers-reduced-motion: reduce) {
     :root {
       --tab-anim-duration: 0ms !important;
+      --btn-anim-duration: 0ms !important;
     }
     .tab,
     .tab-inner,
     .tab-title,
     .tab-close,
-    .tabs-container {
+    .tabs-container,
+    .nav-btn,
+    .shield-btn {
       transition-duration: 0ms !important;
+    }
+    .nav-btn:active:not(:disabled),
+    .shield-btn:active:not(:disabled) {
+      transform: none !important;
     }
   }
 
   html[data-reduced-motion="true"] {
     --tab-anim-duration: 0ms !important;
+    --btn-anim-duration: 0ms !important;
   }
 
   html[data-reduced-motion="true"] .tab,
   html[data-reduced-motion="true"] .tab-inner,
   html[data-reduced-motion="true"] .tab-title,
   html[data-reduced-motion="true"] .tab-close,
-  html[data-reduced-motion="true"] .tabs-container {
+  html[data-reduced-motion="true"] .tabs-container,
+  html[data-reduced-motion="true"] .nav-btn,
+  html[data-reduced-motion="true"] .shield-btn {
     transition-duration: 0ms !important;
+  }
+
+  html[data-reduced-motion="true"] .nav-btn:active:not(:disabled),
+  html[data-reduced-motion="true"] .shield-btn:active:not(:disabled) {
+    transform: none !important;
   }
 
   /* Rapid window drag resize: disable transitions to eliminate rubber-banding/lag */
@@ -585,26 +602,42 @@
     height: 32px;
     border: none;
     border-radius: 50%;
-    background: transparent;
-    color: var(--text-primary);
+    background-color: transparent;
+    color: var(--text-secondary);
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
     flex-shrink: 0;
+    outline: none;
+    transition:
+      background-color var(--btn-anim-duration) var(--btn-anim-ease),
+      color var(--btn-anim-duration) var(--btn-anim-ease),
+      opacity var(--btn-anim-duration) var(--btn-anim-ease),
+      transform var(--btn-anim-duration) var(--btn-anim-ease);
   }
 
   .nav-btn:hover:not(:disabled) {
-    background: var(--btn-hover);
+    background-color: var(--btn-hover);
+    color: var(--text-primary);
   }
 
   .nav-btn:active:not(:disabled) {
-    background: var(--btn-active);
+    background-color: var(--btn-active);
+    color: var(--text-primary);
+    transform: scale(0.92);
+  }
+
+  .nav-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 
   .nav-btn:disabled {
     opacity: 0.35;
     cursor: default;
+    background-color: transparent;
+    transform: none;
   }
 
   .omnibox-wrapper {
@@ -649,57 +682,12 @@
     -webkit-user-select: text;
   }
 
-  /* Inline quick menu drawer inside toolbar */
-  .menu-drawer {
-    display: none;
-    align-items: center;
-    gap: 4px;
-    padding-left: 4px;
-    border-left: 1px solid var(--toolbar-border);
-  }
-
-  .menu-drawer.open {
-    display: flex;
-  }
-
-  .menu-chip {
-    height: 26px;
-    padding: 0 10px;
-    border: 1px solid var(--toolbar-border);
-    border-radius: 13px;
-    background: var(--omnibox-bg);
-    color: var(--text-primary);
-    font-size: 11.5px;
-    font-weight: 500;
-    cursor: pointer;
-    white-space: nowrap;
-    display: flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .menu-chip:hover {
-    background: var(--btn-hover);
-  }
-
-  .menu-chip.adblock-on {
-    background: var(--badge-on-bg);
-    color: var(--badge-on-text);
-    border-color: transparent;
-  }
-
-  .menu-chip.adblock-off {
-    background: var(--badge-off-bg);
-    color: var(--badge-off-text);
-    border-color: transparent;
-  }
-
   .shield-btn {
     height: 28px;
     padding: 0 9px;
     border: 1px solid transparent;
     border-radius: 14px;
-    background: var(--badge-on-bg);
+    background-color: var(--badge-on-bg);
     color: var(--badge-on-text);
     font-size: 11.5px;
     font-weight: 600;
@@ -708,16 +696,45 @@
     align-items: center;
     gap: 5px;
     flex-shrink: 0;
-    transition: background-color 0.12s ease, opacity 0.12s ease;
+    outline: none;
+    transition:
+      background-color var(--btn-anim-duration) var(--btn-anim-ease),
+      color var(--btn-anim-duration) var(--btn-anim-ease),
+      opacity var(--btn-anim-duration) var(--btn-anim-ease),
+      transform var(--btn-anim-duration) var(--btn-anim-ease);
   }
 
-  .shield-btn:hover {
-    filter: brightness(0.96);
+  .shield-btn:hover:not(:disabled) {
+    background-color: color-mix(in srgb, var(--btn-hover), var(--badge-on-bg));
+  }
+
+  .shield-btn:active:not(:disabled) {
+    background-color: color-mix(in srgb, var(--btn-active), var(--badge-on-bg));
+    transform: scale(0.95);
+  }
+
+  .shield-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .shield-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+    transform: none;
   }
 
   .shield-btn.shield-off {
-    background: var(--badge-off-bg);
+    background-color: var(--badge-off-bg);
     color: var(--badge-off-text);
+  }
+
+  .shield-btn.shield-off:hover:not(:disabled) {
+    background-color: color-mix(in srgb, var(--btn-hover), var(--badge-off-bg));
+  }
+
+  .shield-btn.shield-off:active:not(:disabled) {
+    background-color: color-mix(in srgb, var(--btn-active), var(--badge-off-bg));
   }
 
   .shield-badge {
@@ -942,17 +959,6 @@
         <span id="shield-badge" class="shield-badge">0</span>
       </button>
 
-      <div id="menu-drawer" class="menu-drawer">
-        <button id="bookmarks-chip" class="menu-chip" title="Open Bookmarks (ember://bookmarks)">★ Bookmarks</button>
-        <button id="history-chip" class="menu-chip" title="Open History (ember://history)">⏱ History</button>
-        <button id="find-chip" class="menu-chip" title="Find in page (Ctrl+F)">Find</button>
-        <button id="duplicate-chip" class="menu-chip" title="Duplicate current tab (or right-click any tab)">Duplicate</button>
-        <button id="reopen-chip" class="menu-chip" title="Reopen closed tab (Ctrl+Shift+T)">Reopen Tab</button>
-        <button id="home-chip" class="menu-chip" title="Go to New Tab page">New Tab</button>
-        <button id="settings-chip" class="menu-chip" title="Open Settings (ember://settings)">&#9881; Settings</button>
-        <button id="adblock-chip" class="menu-chip adblock-on" title="Toggle global adblocker">Global Shield: ON</button>
-      </div>
-
       <button id="menu-btn" class="nav-btn" title="Customize and control Ember" aria-label="Menu">
         <svg viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
       </button>
@@ -990,15 +996,36 @@
       const shieldBtn = document.getElementById("shield-btn");
       const shieldBadge = document.getElementById("shield-badge");
       const menuBtn = document.getElementById("menu-btn");
-      const menuDrawer = document.getElementById("menu-drawer");
-      const bookmarksChip = document.getElementById("bookmarks-chip");
-      const historyChip = document.getElementById("history-chip");
-      const findChip = document.getElementById("find-chip");
-      const duplicateChip = document.getElementById("duplicate-chip");
-      const reopenChip = document.getElementById("reopen-chip");
-      const homeChip = document.getElementById("home-chip");
-      const settingsChip = document.getElementById("settings-chip");
-      const adblockChip = document.getElementById("adblock-chip");
+
+      let activePopupKind = null;
+
+      window.openPopup = function (kind, anchorRect, data) {
+        const rect = anchorRect || { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
+        activePopupKind = kind;
+        sendIpc("open_popup:" + JSON.stringify({
+          kind: kind,
+          anchor: {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            width: rect.width,
+            height: rect.height
+          },
+          data: data || {}
+        }));
+      };
+
+      window.closePopup = function () {
+        if (activePopupKind !== null) {
+          activePopupKind = null;
+          sendIpc("close_popup");
+        }
+      };
+
+      window.__emberOnPopupClosed = function () {
+        activePopupKind = null;
+      };
 
       let currentState = {
         activeTabId: 0,
@@ -1155,50 +1182,23 @@
         sendIpc("downloads_clear");
       });
 
-      menuBtn.addEventListener("click", function () {
-        menuDrawer.classList.toggle("open");
-      });
-
-      bookmarksChip.addEventListener("click", function () {
-        sendIpc("navigate:ember://bookmarks");
-        menuDrawer.classList.remove("open");
-      });
-
-      historyChip.addEventListener("click", function () {
-        sendIpc("navigate:ember://history");
-        menuDrawer.classList.remove("open");
-      });
-
-      findChip.addEventListener("click", function () {
-        menuDrawer.classList.remove("open");
-        window.__emberOpenFind();
-      });
-
-      duplicateChip.addEventListener("click", function () {
-        if (currentState.activeTabId) {
-          sendIpc("duplicate_tab:" + currentState.activeTabId);
+      menuBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (activePopupKind === "menu") {
+          window.closePopup();
+        } else {
+          const rect = menuBtn.getBoundingClientRect();
+          window.openPopup("menu", rect, {
+            zoomPercent: currentState.activeZoomPercent || 100
+          });
         }
-        menuDrawer.classList.remove("open");
       });
 
-      reopenChip.addEventListener("click", function () {
-        sendIpc("reopen_closed_tab");
-        menuDrawer.classList.remove("open");
-      });
-
-      homeChip.addEventListener("click", function () {
-        sendIpc("home");
-        menuDrawer.classList.remove("open");
-      });
-
-      settingsChip.addEventListener("click", function () {
-        sendIpc("navigate:ember://settings");
-        menuDrawer.classList.remove("open");
-      });
-
-      adblockChip.addEventListener("click", function () {
-        sendIpc("toggle_adblock");
-      });
+      document.addEventListener("pointerdown", function (e) {
+        if (activePopupKind !== null && !menuBtn.contains(e.target) && e.target !== omnibox) {
+          window.closePopup();
+        }
+      }, true);
 
       shieldBtn.addEventListener("click", function () {
         sendIpc("toggle_site_allowlist");
@@ -1209,19 +1209,115 @@
         sendIpc("toggle_adblock");
       });
 
+      const omniboxWrapper = document.querySelector(".omnibox-wrapper");
+      let omniboxQuerySeq = 0;
+      let omniboxDebounceTimer = null;
+      let omniboxItems = [];
+      let omniboxSelectedIdx = -1;
+      let omniboxTypedValue = "";
+
+      function closeOmniboxPopup() {
+        omniboxItems = [];
+        omniboxSelectedIdx = -1;
+        if (omniboxDebounceTimer) {
+          clearTimeout(omniboxDebounceTimer);
+          omniboxDebounceTimer = null;
+        }
+        if (activePopupKind === "omnibox") {
+          window.closePopup();
+        }
+      }
+
+      window.__emberShowOmniboxSuggestions = function (queryId, items) {
+        if (queryId !== omniboxQuerySeq || document.activeElement !== omnibox) {
+          return;
+        }
+        omniboxItems = Array.isArray(items) ? items : [];
+        omniboxSelectedIdx = -1;
+        if (omniboxItems.length === 0) {
+          if (activePopupKind === "omnibox") {
+            window.closePopup();
+          }
+          return;
+        }
+        const rect = omniboxWrapper.getBoundingClientRect();
+        window.openPopup("omnibox", rect, {
+          count: omniboxItems.length,
+          items: omniboxItems,
+          selectedIndex: -1
+        });
+      };
+
       omnibox.addEventListener("focus", function () {
         omnibox.select();
+        omniboxTypedValue = omnibox.value;
+      });
+
+      omnibox.addEventListener("blur", function () {
+        setTimeout(function () {
+          if (document.activeElement !== omnibox && activePopupKind === "omnibox") {
+            closeOmniboxPopup();
+          }
+        }, 120);
+      });
+
+      omnibox.addEventListener("input", function () {
+        omniboxTypedValue = omnibox.value;
+        omniboxSelectedIdx = -1;
+        if (omniboxDebounceTimer) {
+          clearTimeout(omniboxDebounceTimer);
+          omniboxDebounceTimer = null;
+        }
+        const raw = omnibox.value;
+        if (raw.trim().length === 0) {
+          omniboxQuerySeq += 1;
+          closeOmniboxPopup();
+          return;
+        }
+        omniboxDebounceTimer = setTimeout(function () {
+          omniboxDebounceTimer = null;
+          omniboxQuerySeq += 1;
+          sendIpc("omnibox_suggest:" + omniboxQuerySeq + ":" + raw);
+        }, 50);
       });
 
       omnibox.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowDown" && omniboxItems.length > 0) {
+          e.preventDefault();
+          omniboxSelectedIdx = (omniboxSelectedIdx + 1) % omniboxItems.length;
+          const chosen = omniboxItems[omniboxSelectedIdx];
+          omnibox.value = chosen.kind === "search" ? chosen.title : chosen.url;
+          sendIpc("omnibox_select:" + omniboxSelectedIdx);
+          return;
+        }
+        if (e.key === "ArrowUp" && omniboxItems.length > 0) {
+          e.preventDefault();
+          omniboxSelectedIdx = omniboxSelectedIdx <= 0
+            ? omniboxItems.length - 1
+            : omniboxSelectedIdx - 1;
+          const chosen = omniboxItems[omniboxSelectedIdx];
+          omnibox.value = chosen.kind === "search" ? chosen.title : chosen.url;
+          sendIpc("omnibox_select:" + omniboxSelectedIdx);
+          return;
+        }
         if (e.key === "Enter") {
           e.preventDefault();
-          const val = omnibox.value.trim();
-          if (val.length > 0) {
-            sendIpc("navigate:" + val);
+          let target = omnibox.value.trim();
+          if (omniboxSelectedIdx >= 0 && omniboxItems[omniboxSelectedIdx]) {
+            target = omniboxItems[omniboxSelectedIdx].url;
+          }
+          closeOmniboxPopup();
+          if (target.length > 0) {
+            sendIpc("navigate:" + target);
             omnibox.blur();
           }
         } else if (e.key === "Escape") {
+          if (activePopupKind === "omnibox") {
+            e.preventDefault();
+            omnibox.value = omniboxTypedValue;
+            closeOmniboxPopup();
+            return;
+          }
           const active = currentState.tabs.find(function (t) {
             return t.id === currentState.activeTabId;
           });
@@ -2143,14 +2239,6 @@
           shieldBtn.title =
             blockedCount +
             " ads/trackers blocked on this tab — Click to pause Shield for this site (right-click for global toggle)";
-        }
-
-        if (currentState.adblockEnabled) {
-          adblockChip.className = "menu-chip adblock-on";
-          adblockChip.textContent = "Global Shield: ON";
-        } else {
-          adblockChip.className = "menu-chip adblock-off";
-          adblockChip.textContent = "Global Shield: OFF";
         }
       };
 

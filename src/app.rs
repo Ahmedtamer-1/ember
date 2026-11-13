@@ -121,11 +121,13 @@ impl BenchRunner {
 
 /// Internal events dispatched from WebView callbacks to the main `tao` event loop.
 #[derive(Debug, Clone)]
-enum AppEvent {
+pub(crate) enum AppEvent {
     /// Periodic wake-up tick used during automated benchmark runs.
     Tick,
     /// Raw IPC command string received from the top Chrome UI WebView.
     UiIpc(String),
+    /// Raw IPC message emitted inside the popup overlay WebView.
+    PopupIpc(String),
     /// Raw IPC message emitted inside a tab's content WebView.
     PageIpc { tab_id: usize, payload: String },
     /// Document title updated inside a tab's page WebView.
@@ -146,6 +148,11 @@ enum AppEvent {
     HttpsBlocked { tab_id: usize, url: String },
     /// A background task changed state that `ember://settings` displays (e.g. filter update done).
     RefreshSettingsPage,
+    /// Ranked omnibox suggestions computed on the background DB worker thread.
+    OmniboxSuggestions {
+        query_id: u64,
+        suggestions: Vec<crate::storage::OmniboxSuggestion>,
+    },
 }
 
 struct WebViewEnv<'a> {
@@ -267,7 +274,7 @@ fn ensure_active_tab_webview(
         .build_as_child(env.window)?;
 
     let blocked_proxy = env.proxy.clone();
-    adblock::attach_webview_adblocker(&webview, env.adblocker.clone(), move || {
+    adblock::attach_webview_adblocker(&webview, tab_id, env.adblocker.clone(), move || {
         let _ = blocked_proxy.send_event(AppEvent::AdBlocked { tab_id });
     });
     permissions::attach_webview_permissions(&webview, Arc::clone(env.permissions));
@@ -316,6 +323,11 @@ fn navigate_active_tab(
     raw_input: &str,
 ) {
     let mut target_url = ui::normalize_omnibox_input(raw_input, env.settings.get().search_engine);
+    if let Some(canonical) = pages::is_singleton_internal_url(&target_url) {
+        tabs.open_or_focus_internal_page(canonical);
+        let _ = ensure_active_tab_webview(tabs, env);
+        return;
+    }
     if env.settings.should_intercept_http(&target_url) {
         target_url = pages::warning_url_for(&target_url);
     }
@@ -616,12 +628,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         &downloads,
     );
 
+    let mut popup_manager = crate::popup::PopupManager::new();
+
     let check_interval = tabs
         .suspend_timeout()
         .min(SUSPEND_CHECK_INTERVAL)
         .max(Duration::from_secs(1));
 
-    event_loop.run(move |event, _, control_flow| {
+    event_loop.run(move |event, window_target, control_flow| {
         let wait_slice = if bench_runner.is_some() {
             Duration::from_millis(250)
         } else {
@@ -709,15 +723,50 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
         match event {
             Event::WindowEvent {
+                window_id,
                 event: WindowEvent::CloseRequested,
                 ..
-            } => {
+            } if window_id == window.id() => {
                 *control_flow = ControlFlow::Exit;
             }
             Event::WindowEvent {
-                event: WindowEvent::Resized(physical_size),
+                window_id,
+                event: WindowEvent::Moved(_),
+                ..
+            } if window_id == window.id() => {
+                if popup_manager.is_open() {
+                    popup_manager.hide_now();
+                    let _ = chrome_webview.evaluate_script(
+                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                    );
+                }
+            }
+            Event::WindowEvent {
+                window_id,
+                event: WindowEvent::Focused(false),
                 ..
             } => {
+                if popup_manager.is_open()
+                    && (popup_manager.is_popup_window(window_id)
+                        || !popup_manager.is_foreground_ours(&window))
+                {
+                    popup_manager.close(true);
+                    let _ = chrome_webview.evaluate_script(
+                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                    );
+                }
+            }
+            Event::WindowEvent {
+                window_id,
+                event: WindowEvent::Resized(physical_size),
+                ..
+            } if window_id == window.id() => {
+                if popup_manager.is_open() {
+                    popup_manager.hide_now();
+                    let _ = chrome_webview.evaluate_script(
+                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                    );
+                }
                 let (chrome_bounds, content_bounds) =
                     ui::compute_layout_bounds(physical_size, window.scale_factor());
                 current_content_bounds = content_bounds;
@@ -735,13 +784,20 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 );
             }
             Event::WindowEvent {
+                window_id,
                 event:
                     WindowEvent::ScaleFactorChanged {
                         scale_factor,
                         new_inner_size,
                     },
                 ..
-            } => {
+            } if window_id == window.id() => {
+                if popup_manager.is_open() {
+                    popup_manager.hide_now();
+                    let _ = chrome_webview.evaluate_script(
+                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                    );
+                }
                 let (chrome_bounds, content_bounds) =
                     ui::compute_layout_bounds(*new_inner_size, scale_factor);
                 current_content_bounds = content_bounds;
@@ -804,6 +860,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 );
                             }
                             UiCommand::NewTab => {
+                                if popup_manager.is_open() {
+                                    popup_manager.hide_now();
+                                    let _ = chrome_webview.evaluate_script(
+                                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                                    );
+                                }
                                 tabs.create_tab(&settings.get().homepage, true);
                                 let mut env = WebViewEnv {
                                     window: &window,
@@ -828,7 +890,115 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &downloads,
                                 );
                             }
+                            UiCommand::NewWindow => {
+                                if let Ok(exe) = std::env::current_exe() {
+                                    let _ = std::process::Command::new(exe).spawn();
+                                }
+                            }
+                            UiCommand::OpenNewTab(target_url) => {
+                                if popup_manager.is_open() {
+                                    popup_manager.hide_now();
+                                    let _ = chrome_webview.evaluate_script(
+                                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                                    );
+                                }
+                                let normalized = ui::normalize_omnibox_input(
+                                    &target_url,
+                                    settings.get().search_engine,
+                                );
+                                if let Some(canonical) = pages::is_singleton_internal_url(&normalized)
+                                {
+                                    tabs.open_or_focus_internal_page(canonical);
+                                } else {
+                                    tabs.create_tab(&normalized, true);
+                                }
+                                let mut env = WebViewEnv {
+                                    window: &window,
+                                    web_context: &mut web_context,
+                                    storage: &storage,
+                                    adblocker: &adblocker,
+                                    permissions: &permissions,
+                                    settings: &settings,
+                                    downloads: &downloads,
+                                    proxy: &proxy,
+                                    content_bounds: current_content_bounds,
+                                };
+                                let _ = ensure_active_tab_webview(&mut tabs, &mut env);
+                                sync_chrome_ui(
+                                    &chrome_webview,
+                                    &window,
+                                    &tabs,
+                                    &storage,
+                                    &adblocker,
+                                    &settings,
+                                    &find_state,
+                                    &downloads,
+                                );
+                            }
+                            UiCommand::OpenDownloads => {
+                                open_directory_in_shell(storage.downloads_dir());
+                            }
+                            UiCommand::Print => {
+                                if let Some(webview) =
+                                    tabs.active_tab().and_then(|t| t.webview.as_ref())
+                                {
+                                    let _ = webview.evaluate_script("window.print();");
+                                }
+                            }
+                            UiCommand::OpenPopup(json_payload) => {
+                                if let Some(req) = crate::popup::parse_open_popup_payload(&json_payload) {
+                                    let mut appearance = ui::query_window_appearance(&window);
+                                    appearance.is_dark =
+                                        settings.get().theme.resolve_is_dark(appearance.is_dark);
+                                    let reduced_motion = !settings.get().tab_animations_enabled;
+                                    let _ = popup_manager.open(
+                                        crate::popup::PopupOpenContext {
+                                            event_loop: window_target,
+                                            main_window: &window,
+                                            web_context: &mut web_context,
+                                            proxy: &proxy,
+                                            appearance: &appearance,
+                                            reduced_motion,
+                                        },
+                                        &req,
+                                    );
+                                }
+                            }
+                            UiCommand::ClosePopup => {
+                                popup_manager.close(true);
+                                let _ = chrome_webview.evaluate_script(
+                                    "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                                );
+                            }
+                            UiCommand::OmniboxSuggest { query_id, query } => {
+                                let s = settings.get();
+                                let suggest_proxy = proxy.clone();
+                                storage.suggest_async(
+                                    query_id,
+                                    query,
+                                    8,
+                                    s.search_suggestions_enabled,
+                                    s.search_engine,
+                                    move |qid, suggestions| {
+                                        let _ = suggest_proxy.send_event(
+                                            AppEvent::OmniboxSuggestions {
+                                                query_id: qid,
+                                                suggestions,
+                                            },
+                                        );
+                                    },
+                                );
+                            }
+                            UiCommand::OmniboxSelect(idx) => {
+                                popup_manager.update_data(&format!("{{\"selectedIndex\":{idx}}}"));
+                            }
                             UiCommand::SwitchTab(tab_id) => {
+                                if popup_manager.is_open() {
+                                    popup_manager.hide_now();
+                                    let _ = chrome_webview.evaluate_script(
+                                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                                    );
+                                }
                                 if tabs.switch_to(tab_id) {
                                     let mut env = WebViewEnv {
                                         window: &window,
@@ -1352,6 +1522,15 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &ids,
                                         &resources.exceptions,
                                     );
+                                    for sel in &selectors {
+                                        adblocker.record_debug_event(
+                                            tab_id,
+                                            adblock::AdblockMatchKind::CosmeticSelector,
+                                            sel.clone(),
+                                            url.clone(),
+                                            String::from("generic-cosmetic"),
+                                        );
+                                    }
                                     let script =
                                         adblock::build_generic_selectors_script(&selectors);
                                     if !script.is_empty() {
@@ -1362,6 +1541,24 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         }
                                     }
                                 }
+                            }
+                            PageIpcEvent::ScriptletLog { url, name, detail } => {
+                                eprintln!(
+                                    "[adblock-scriptlet] tab={} name={} detail={} url={}",
+                                    tab_id, name, detail, url
+                                );
+                                let label = if detail.is_empty() {
+                                    name
+                                } else {
+                                    format!("{name}({detail})")
+                                };
+                                adblocker.record_debug_event(
+                                    tab_id,
+                                    adblock::AdblockMatchKind::ScriptletExecuted,
+                                    label,
+                                    url,
+                                    String::from("scriptlet"),
+                                );
                             }
                             PageIpcEvent::FindResult { active, total } => {
                                 if tab_id == tabs.active_tab_id() {
@@ -1721,6 +1918,32 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &downloads,
                                 );
                             }
+                            PageIpcEvent::PointerDown => {
+                                if popup_manager.is_open() {
+                                    popup_manager.close(true);
+                                    let _ = chrome_webview.evaluate_script(
+                                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                                    );
+                                }
+                            }
+                            PageIpcEvent::SpaNav(spa_url) => {
+                                let changed = tabs.update_page_load(tab_id, spa_url.clone(), false);
+                                if let Some(tab) = tabs.get_tab(tab_id) {
+                                    storage.record_visit_async(&tab.url, &tab.title);
+                                }
+                                if changed {
+                                    sync_chrome_ui(
+                                        &chrome_webview,
+                                        &window,
+                                        &tabs,
+                                        &storage,
+                                        &adblocker,
+                                        &settings,
+                                        &find_state,
+                                        &downloads,
+                                    );
+                                }
+                            }
                             PageIpcEvent::SettingsSet { key, value } => {
                                 let mut theme_to_apply = None;
                                 let mut suspend_to_apply = None;
@@ -1781,6 +2004,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     }
                                     "https_only_mode" => {
                                         s.https_only_mode = value == "true";
+                                    }
+                                    "search_suggestions_enabled" => {
+                                        s.search_suggestions_enabled = value == "true";
                                     }
                                     "tab_animations_enabled" => {
                                         s.tab_animations_enabled = value == "true";
@@ -1962,7 +2188,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 }
                 AppEvent::TabTitleChanged { tab_id, title } => {
                     if let Some(tab) = tabs.get_tab(tab_id) {
-                        storage.update_visit_title(&tab.url, &title);
+                        storage.update_visit_title_async(&tab.url, &title);
                     }
                     if tabs.update_title(tab_id, title) {
                         sync_chrome_ui(
@@ -1985,7 +2211,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     let changed = tabs.update_page_load(tab_id, url, is_loading);
                     if !is_loading {
                         if let Some(tab) = tabs.get_tab(tab_id) {
-                            storage.record_visit(&tab.url, &tab.title);
+                            storage.record_visit_async(&tab.url, &tab.title);
                             let factor = resolve_zoom_for_url(&storage, &tab.url);
                             if let Some(webview) = &tab.webview {
                                 let _ = webview.zoom(factor);
@@ -2116,8 +2342,105 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         );
                     }
                 }
+                AppEvent::OmniboxSuggestions {
+                    query_id,
+                    suggestions,
+                } => {
+                    let mut items_json = String::from("[");
+                    for (idx, item) in suggestions.iter().enumerate() {
+                        if idx > 0 {
+                            items_json.push(',');
+                        }
+                        items_json.push_str("{\"kind\":");
+                        push_js_quoted(&mut items_json, item.kind.as_str());
+                        items_json.push_str(",\"title\":");
+                        push_js_quoted(&mut items_json, &item.title);
+                        items_json.push_str(",\"url\":");
+                        push_js_quoted(&mut items_json, &item.url);
+                        items_json.push('}');
+                    }
+                    items_json.push(']');
+                    let script = format!(
+                        "if(window.__emberShowOmniboxSuggestions){{window.__emberShowOmniboxSuggestions({query_id},{items_json});}}"
+                    );
+                    let _ = chrome_webview.evaluate_script(&script);
+                }
+                AppEvent::PopupIpc(payload) => {
+                    let trimmed = payload.trim();
+                    if trimmed == "popup_closed" {
+                        popup_manager.hide_now();
+                    } else if trimmed == "popup_close_request" {
+                        popup_manager.close(true);
+                        let _ = chrome_webview.evaluate_script(
+                            "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                        );
+                    } else if let Some(cmd) = trimmed.strip_prefix("popup_keep_open:") {
+                        match cmd.trim() {
+                            "zoom_in" => {
+                                adjust_active_tab_zoom(&tabs, &storage, zoom::zoom_in);
+                            }
+                            "zoom_out" => {
+                                adjust_active_tab_zoom(&tabs, &storage, zoom::zoom_out);
+                            }
+                            "zoom_reset" => {
+                                adjust_active_tab_zoom(&tabs, &storage, |_| zoom::zoom_reset());
+                            }
+                            _ => {}
+                        }
+                        sync_chrome_ui(
+                            &chrome_webview,
+                            &window,
+                            &tabs,
+                            &storage,
+                            &adblocker,
+                            &settings,
+                            &find_state,
+                            &downloads,
+                        );
+                        let zoom_pct = tabs
+                            .active_tab()
+                            .map(|t| resolve_zoom_for_url(&storage, &t.url))
+                            .map_or(100, zoom::zoom_percent);
+                        popup_manager.update_data(&format!("{{\"zoomPercent\":{zoom_pct}}}"));
+                    } else if let Some(cmd) = trimmed.strip_prefix("popup_action:") {
+                        popup_manager.hide_now();
+                        let _ = chrome_webview.evaluate_script(
+                            "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                        );
+                        let action = cmd.trim();
+                        if action == "open_find" {
+                            let _ = chrome_webview.focus();
+                            let _ = chrome_webview.evaluate_script(
+                                "if(window.__emberOpenFind){window.__emberOpenFind();}",
+                            );
+                        } else {
+                            let _ = proxy.send_event(AppEvent::UiIpc(action.to_owned()));
+                        }
+                    }
+                }
             },
             _ => {}
         }
     });
+}
+
+fn push_js_quoted(out: &mut String, s: &str) {
+    out.push('"');
+    ui::push_js_escaped(out, s);
+    out.push('"');
+}
+
+fn open_directory_in_shell(dir: &std::path::Path) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer").arg(dir).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(dir).spawn();
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+    }
 }
