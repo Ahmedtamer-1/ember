@@ -173,7 +173,7 @@ const SHARED_INTERNAL_CSS: &str = r#"
   }
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body {
+html, body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   background: var(--bg);
   color: var(--text);
@@ -232,6 +232,7 @@ fn render_newtab_html(most_visited: &[HistoryEntry]) -> String {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="color-scheme" content="light dark">
 <title>New Tab</title>
 <style>
 {SHARED_INTERNAL_CSS}

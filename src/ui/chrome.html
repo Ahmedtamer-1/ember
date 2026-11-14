@@ -13,6 +13,8 @@
     --btn-anim-ease: cubic-bezier(0.2, 0, 0, 1);
     --tab-max-width: 240px;
     --tab-min-width: 36px;
+    --omnibox-btn-size: 28px;
+    --omnibox-icon-size: 18px;
     --tab-width: 240px;
     --tab-content-width: 240px;
     --accent: #0067c0;
@@ -216,16 +218,13 @@
     color: var(--text-secondary);
     cursor: default;
     overflow: hidden;
-    transform: translate3d(calc(var(--drag-x, 0px) + var(--tab-shift-x, 0px) + var(--flip-x, 0px)), 0, 0);
-    transition: width var(--tab-anim-duration) var(--tab-anim-ease),
-                opacity var(--tab-anim-duration) var(--tab-anim-ease),
-                transform var(--tab-anim-duration) var(--tab-anim-ease),
-                background-color 0.12s ease;
+    transform: translate3d(calc(var(--drag-x, 0px) + var(--tab-shift-x, 0px)), 0, 0);
+    transition: background-color 0.12s ease;
   }
 
   /* Dynamic will-change: applied only while actively animating to prevent compositor memory bloat */
   .tab.animating {
-    will-change: transform, width, opacity;
+    will-change: transform;
   }
 
   /* Actively dragged tab: glued to cursor with 0 transition, elevated */
@@ -247,16 +246,13 @@
   }
 
   .tab-inner {
-    position: absolute;
-    top: 0;
-    left: 0;
+    width: 100%;
+    min-width: 0;
     height: 100%;
-    width: var(--tab-content-width, 240px);
-    min-width: var(--tab-content-width, 240px);
     display: flex;
     align-items: center;
-    padding: 0 8px 0 12px;
-    gap: 8px;
+    padding: 0 4px 0 8px;
+    gap: 4px;
     box-sizing: border-box;
     pointer-events: auto;
   }
@@ -307,50 +303,53 @@
 
   /* Progressive content hiding as tabs narrow */
   .tab-title {
-    flex: 1;
+    flex: 1 1 auto;
     min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent);
     font-size: 12px;
     line-height: 16px;
     opacity: var(--tab-title-opacity, 1);
     transition: opacity var(--tab-anim-duration) ease;
   }
 
-  /* When title has faded completely, hide from layout */
+  /* When title is below threshold, fade out and collapse without clipping close button */
   .tab[data-title-hidden="true"] .tab-title {
     opacity: 0 !important;
     pointer-events: none !important;
     max-width: 0 !important;
-    flex: 0 !important;
+    flex: 0 0 0px !important;
+    margin: 0 !important;
   }
 
-  /* When tabs shrink below 52px, hide close button on inactive tabs */
+  /* Below 56px, inactive tabs fade out their close button smoothly (never pop) */
   .tab[data-micro="true"]:not(.active) .tab-close {
     opacity: 0 !important;
+    width: 0 !important;
     pointer-events: none !important;
-    display: none !important;
+    overflow: hidden !important;
   }
 
   /* Active tab ALWAYS keeps its close button visible */
   .tab.active .tab-close {
     opacity: 1 !important;
-    display: flex !important;
+    width: 24px !important;
     pointer-events: auto !important;
   }
 
-  /* Active micro tab layout: favicon and close button fit neatly */
+  /* Active micro tab layout: favicon and 24px close button fit neatly */
   .tab.active[data-micro="true"] .tab-inner {
     justify-content: space-between;
     padding: 0 4px 0 6px;
+    gap: 2px;
   }
 
-  /* Closing tab animation state */
-  .tab.tab-closing {
-    width: 0px !important;
-    opacity: 0 !important;
-    margin-right: -2px !important;
+  /* Closing tab animation state (width/opacity owned by WAAPI) */
+  .tab.tab-closing,
+  .tab.tab-closing * {
     pointer-events: none !important;
   }
 
@@ -394,8 +393,9 @@
   }
 
   .tab-close {
-    width: 18px;
-    height: 18px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
     border: none;
     border-radius: 50%;
     background: transparent;
@@ -405,12 +405,19 @@
     justify-content: center;
     cursor: pointer;
     flex-shrink: 0;
-    transition: opacity var(--tab-anim-duration) ease, background-color 0.1s ease;
+    transition: opacity var(--tab-anim-duration) ease,
+                width var(--tab-anim-duration) ease,
+                background-color 0.12s ease,
+                color 0.12s ease;
   }
 
   .tab-close:hover {
-    background: var(--btn-active);
+    background: var(--btn-hover);
     color: var(--text-primary);
+  }
+
+  .tab-close:active {
+    background: var(--btn-active);
   }
 
   .tab-scroll-btn {
@@ -646,7 +653,7 @@
     align-items: center;
     height: 32px;
     margin: 0 4px;
-    padding: 0 12px;
+    padding: 0 4px 0 12px;
     border-radius: 16px;
     background: var(--omnibox-bg);
     border: 1.5px solid transparent;
@@ -660,13 +667,20 @@
   }
 
   .omnibox-icon {
-    width: 14px;
-    height: 14px;
+    width: var(--omnibox-icon-size);
+    height: var(--omnibox-icon-size);
     color: var(--text-secondary);
     flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: center;
+  }
+
+  .omnibox-icon svg {
+    width: var(--omnibox-icon-size);
+    height: var(--omnibox-icon-size);
+    display: block;
+    fill: currentColor;
   }
 
   .omnibox-input {
@@ -763,8 +777,88 @@
     color: var(--text-primary);
   }
 
-  .omnibox-action-btn.bookmarked {
-    color: #f59e0b;
+  .omnibox-icon-btn {
+    width: var(--omnibox-btn-size);
+    height: var(--omnibox-btn-size);
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition:
+      background-color var(--btn-anim-duration) var(--btn-anim-ease),
+      color var(--btn-anim-duration) var(--btn-anim-ease),
+      transform var(--btn-anim-duration) var(--btn-anim-ease);
+  }
+
+  .omnibox-icon-btn svg {
+    width: var(--omnibox-icon-size);
+    height: var(--omnibox-icon-size);
+    display: block;
+    fill: currentColor;
+    pointer-events: none;
+  }
+
+  .omnibox-icon-btn:hover {
+    background: var(--btn-hover);
+    color: var(--text-primary);
+  }
+
+  .omnibox-icon-btn:active {
+    background: var(--btn-active);
+    transform: scale(0.92);
+  }
+
+  .omnibox-icon-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  .omnibox-icon-btn.bookmarked {
+    color: var(--accent);
+  }
+
+  .omnibox-icon-btn.bookmarked:hover {
+    color: var(--accent);
+  }
+
+  .omnibox-icon-btn.popping svg {
+    animation: bookmark-pop 200ms var(--btn-anim-ease);
+  }
+
+  @keyframes bookmark-pop {
+    0% { transform: scale(1); }
+    45% { transform: scale(1.24); }
+    100% { transform: scale(1); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .omnibox-icon-btn {
+      transition: none;
+    }
+    .omnibox-icon-btn:active {
+      transform: none;
+    }
+    .omnibox-icon-btn.popping svg {
+      animation: none;
+    }
+  }
+
+  html[data-reduced-motion="true"] .omnibox-icon-btn {
+    transition: none;
+  }
+
+  html[data-reduced-motion="true"] .omnibox-icon-btn:active {
+    transform: none;
+  }
+
+  html[data-reduced-motion="true"] .omnibox-icon-btn.popping svg {
+    animation: none;
   }
 
   .zoom-pill {
@@ -922,7 +1016,7 @@
 
       <div class="omnibox-wrapper">
         <span class="omnibox-icon" title="Site information">
-          <svg viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+          <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
         </span>
         <input
           id="omnibox"
@@ -933,7 +1027,9 @@
           placeholder="Search or type URL"
         />
         <button id="zoom-pill" class="omnibox-action-btn zoom-pill" title="Click to reset zoom to 100% (Ctrl+0)">100%</button>
-        <button id="bookmark-btn" class="omnibox-action-btn" title="Bookmark this page (Ctrl+D)" aria-label="Bookmark">☆</button>
+        <button id="bookmark-btn" class="omnibox-icon-btn" title="Bookmark this page (Ctrl+D)" aria-label="Bookmark">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"/></svg>
+        </button>
       </div>
 
       <div id="find-bar" class="find-bar" aria-label="Find in page">
@@ -999,11 +1095,13 @@
 
       let activePopupKind = null;
 
-      window.openPopup = function (kind, anchorRect, data) {
+      window.openPopup = function (kind, anchorRect, data, anchorId, toggle) {
         const rect = anchorRect || { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
         activePopupKind = kind;
         sendIpc("open_popup:" + JSON.stringify({
           kind: kind,
+          anchorId: anchorId || kind,
+          toggle: Boolean(toggle),
           anchor: {
             left: rect.left,
             top: rect.top,
@@ -1056,6 +1154,37 @@
           window.ipc.postMessage(msg);
         }
       }
+
+      // Top-edge resize strip for the custom titlebar (disabled when maximized)
+      function topEdgeResizeDir(e) {
+        if (currentState && currentState.isMaximized) return null;
+        if (e.clientY > 5) return null;
+        if (e.clientX <= 8) return "nw";
+        if (e.clientX >= window.innerWidth - 8) return "ne";
+        return "n";
+      }
+
+      document.addEventListener("mousemove", function (e) {
+        const dir = topEdgeResizeDir(e);
+        if (dir === "nw") {
+          document.documentElement.style.cursor = "nw-resize";
+        } else if (dir === "ne") {
+          document.documentElement.style.cursor = "ne-resize";
+        } else if (dir === "n") {
+          document.documentElement.style.cursor = "n-resize";
+        } else if (document.documentElement.style.cursor) {
+          document.documentElement.style.cursor = "";
+        }
+      });
+
+      document.addEventListener("mousedown", function (e) {
+        if (e.button !== 0) return;
+        const dir = topEdgeResizeDir(e);
+        if (!dir) return;
+        e.preventDefault();
+        e.stopPropagation();
+        sendIpc("window_resize:" + dir);
+      }, true);
 
       // Window dragging & double-click maximize on empty tab-strip space
       tabStrip.addEventListener("mousedown", function (e) {
@@ -1121,8 +1250,7 @@
       });
 
       newTabBtn.addEventListener("click", function () {
-        isMouseClosing = false;
-        lockedTabWidth = null;
+        frozenTabWidth = null;
         sendIpc("new_tab");
       });
 
@@ -1184,14 +1312,10 @@
 
       menuBtn.addEventListener("click", function (e) {
         e.stopPropagation();
-        if (activePopupKind === "menu") {
-          window.closePopup();
-        } else {
-          const rect = menuBtn.getBoundingClientRect();
-          window.openPopup("menu", rect, {
-            zoomPercent: currentState.activeZoomPercent || 100
-          });
-        }
+        const rect = menuBtn.getBoundingClientRect();
+        window.openPopup("menu", rect, {
+          zoomPercent: currentState.activeZoomPercent || 100
+        }, "menu-btn", true);
       });
 
       document.addEventListener("pointerdown", function (e) {
@@ -1210,28 +1334,154 @@
       });
 
       const omniboxWrapper = document.querySelector(".omnibox-wrapper");
+      const OMNIBOX_DEBOUNCE_MS = 50;
+      const OMNIBOX_WATCHDOG_MS = 300;
       let omniboxQuerySeq = 0;
+      let lastAppliedOmniboxSeq = 0;
+      let cancelledBeforeSeq = 0;
       let omniboxDebounceTimer = null;
+      let lastPopupInteractionAt = performance.now();
       let omniboxItems = [];
       let omniboxSelectedIdx = -1;
       let omniboxTypedValue = "";
+      let omniboxIsComposing = false;
+      let omniboxLastInputWasDelete = false;
+      let omniboxAutofillActive = false;
+      let omniboxAutofillTyped = "";
+      let omniboxAutofillUrl = "";
+
+      function isPopupDebug() {
+        return window.__EMBER_POPUP_DEBUG === true
+          || localStorage.getItem("ember_popup_debug") === "1";
+      }
+
+      function logPopupDebug(kind, detail) {
+        if (isPopupDebug()) {
+          console.log("[omnibox-popup] t=" + performance.now().toFixed(1) + "ms " + kind + (detail ? " " + detail : ""));
+        }
+      }
+
+      function nextOmniboxQuerySeq() {
+        omniboxQuerySeq += 1;
+        return omniboxQuerySeq;
+      }
+
+      function clearAutofillState() {
+        omniboxAutofillActive = false;
+        omniboxAutofillTyped = "";
+        omniboxAutofillUrl = "";
+      }
+
+      function hasAutofillSuffixSelected() {
+        return omniboxAutofillActive
+          && omnibox.value.length > omniboxAutofillTyped.length
+          && omnibox.value.startsWith(omniboxAutofillTyped)
+          && omnibox.selectionStart === omniboxAutofillTyped.length
+          && omnibox.selectionEnd === omnibox.value.length;
+      }
+
+      function acceptAutofillCompletion() {
+        const end = omnibox.value.length;
+        omnibox.setSelectionRange(end, end);
+        omniboxTypedValue = omnibox.value;
+        clearAutofillState();
+      }
+
+      function removeAutofillSuffix() {
+        omnibox.value = omniboxAutofillTyped;
+        const end = omniboxAutofillTyped.length;
+        omnibox.setSelectionRange(end, end);
+        omniboxTypedValue = omniboxAutofillTyped;
+        clearAutofillState();
+      }
 
       function closeOmniboxPopup() {
         omniboxItems = [];
         omniboxSelectedIdx = -1;
+        clearAutofillState();
         if (omniboxDebounceTimer) {
           clearTimeout(omniboxDebounceTimer);
           omniboxDebounceTimer = null;
         }
+        cancelledBeforeSeq = Math.max(cancelledBeforeSeq, omniboxQuerySeq);
+        nextOmniboxQuerySeq();
+        logPopupDebug("close", "cancelledBeforeSeq=" + cancelledBeforeSeq);
         if (activePopupKind === "omnibox") {
           window.closePopup();
         }
       }
 
-      window.__emberShowOmniboxSuggestions = function (queryId, items) {
-        if (queryId !== omniboxQuerySeq || document.activeElement !== omnibox) {
+      function dispatchOmniboxQuery(raw, allowAutofill) {
+        if (omniboxDebounceTimer) {
+          clearTimeout(omniboxDebounceTimer);
+          omniboxDebounceTimer = null;
+        }
+        if (raw.trim().length === 0) {
+          closeOmniboxPopup();
           return;
         }
+        lastPopupInteractionAt = performance.now();
+        const seq = nextOmniboxQuerySeq();
+        logPopupDebug("query", "seq=" + seq + " allowAutofill=" + allowAutofill);
+        sendIpc("omnibox_suggest:" + seq + ":" + (allowAutofill ? "1" : "0") + ":" + raw);
+      }
+
+      function scheduleOmniboxQuery(raw, allowAutofill) {
+        if (omniboxDebounceTimer) {
+          clearTimeout(omniboxDebounceTimer);
+          omniboxDebounceTimer = null;
+        }
+        if (raw.trim().length === 0) {
+          closeOmniboxPopup();
+          return;
+        }
+        lastPopupInteractionAt = performance.now();
+        omniboxDebounceTimer = setTimeout(function () {
+          omniboxDebounceTimer = null;
+          dispatchOmniboxQuery(raw, allowAutofill);
+        }, OMNIBOX_DEBOUNCE_MS);
+      }
+
+      setInterval(function () {
+        if (activePopupKind === "omnibox") {
+          const unfocused = !document.hasFocus() || document.activeElement !== omnibox;
+          if (unfocused && performance.now() - lastPopupInteractionAt >= OMNIBOX_WATCHDOG_MS) {
+            console.warn("[omnibox-watchdog] force-closed stale omnibox popup");
+            closeOmniboxPopup();
+          }
+        }
+      }, 100);
+
+      window.__emberShowOmniboxSuggestions = function (queryId, items, autofill) {
+        const ordered = queryId >= lastAppliedOmniboxSeq
+          && queryId > cancelledBeforeSeq
+          && queryId === omniboxQuerySeq;
+        if (!ordered || document.activeElement !== omnibox) {
+          logPopupDebug("drop-stale", "seq=" + queryId + " latest=" + omniboxQuerySeq + " cancelledBefore=" + cancelledBeforeSeq);
+          return;
+        }
+        lastAppliedOmniboxSeq = queryId;
+        lastPopupInteractionAt = performance.now();
+        logPopupDebug("response", "seq=" + queryId + " count=" + (Array.isArray(items) ? items.length : 0));
+
+        if (
+          autofill
+          && autofill.completedText
+          && !omniboxIsComposing
+          && omnibox.value === omniboxTypedValue
+          && omnibox.selectionStart === omnibox.value.length
+          && omnibox.selectionEnd === omnibox.value.length
+          && autofill.completedText.length > omnibox.value.length
+          && autofill.completedText.toLowerCase().startsWith(omnibox.value.toLowerCase())
+        ) {
+          const typedLen = omnibox.value.length;
+          omnibox.value = autofill.completedText;
+          omnibox.setSelectionRange(typedLen, autofill.completedText.length);
+          omniboxAutofillActive = true;
+          omniboxAutofillTyped = autofill.completedText.slice(0, typedLen);
+          omniboxAutofillUrl = autofill.fullUrl || autofill.completedText;
+        }
+
         omniboxItems = Array.isArray(items) ? items : [];
         omniboxSelectedIdx = -1;
         if (omniboxItems.length === 0) {
@@ -1245,45 +1495,78 @@
           count: omniboxItems.length,
           items: omniboxItems,
           selectedIndex: -1
-        });
+        }, "omnibox", false);
       };
 
       omnibox.addEventListener("focus", function () {
         omnibox.select();
         omniboxTypedValue = omnibox.value;
+        lastPopupInteractionAt = performance.now();
+        clearAutofillState();
       });
 
       omnibox.addEventListener("blur", function () {
+        clearAutofillState();
         setTimeout(function () {
-          if (document.activeElement !== omnibox && activePopupKind === "omnibox") {
+          if ((!document.hasFocus() || document.activeElement !== omnibox) && activePopupKind === "omnibox") {
             closeOmniboxPopup();
           }
         }, 120);
       });
 
-      omnibox.addEventListener("input", function () {
-        omniboxTypedValue = omnibox.value;
-        omniboxSelectedIdx = -1;
-        if (omniboxDebounceTimer) {
-          clearTimeout(omniboxDebounceTimer);
-          omniboxDebounceTimer = null;
-        }
+      omnibox.addEventListener("compositionstart", function () {
+        omniboxIsComposing = true;
+        clearAutofillState();
+      });
+
+      omnibox.addEventListener("compositionend", function () {
+        omniboxIsComposing = false;
         const raw = omnibox.value;
-        if (raw.trim().length === 0) {
-          omniboxQuerySeq += 1;
-          closeOmniboxPopup();
+        omniboxTypedValue = raw;
+        omniboxSelectedIdx = -1;
+        scheduleOmniboxQuery(raw, false);
+      });
+
+      omnibox.addEventListener("beforeinput", function (e) {
+        omniboxLastInputWasDelete = Boolean(e.inputType && e.inputType.startsWith("delete"));
+      });
+
+      omnibox.addEventListener("input", function (e) {
+        if (omniboxIsComposing || (e && e.isComposing)) {
+          clearAutofillState();
           return;
         }
-        omniboxDebounceTimer = setTimeout(function () {
-          omniboxDebounceTimer = null;
-          omniboxQuerySeq += 1;
-          sendIpc("omnibox_suggest:" + omniboxQuerySeq + ":" + raw);
-        }, 50);
+        const isDelete = omniboxLastInputWasDelete || Boolean(e && e.inputType && e.inputType.startsWith("delete"));
+        omniboxLastInputWasDelete = false;
+        clearAutofillState();
+
+        const raw = omnibox.value;
+        omniboxTypedValue = raw;
+        omniboxSelectedIdx = -1;
+        const caretAtEnd = omnibox.selectionStart === raw.length && omnibox.selectionEnd === raw.length;
+        const hasSpaces = /\s/.test(raw);
+        const allowAutofill = !isDelete && !omniboxIsComposing && caretAtEnd && raw.length > 0 && !hasSpaces;
+        scheduleOmniboxQuery(raw, allowAutofill);
       });
 
       omnibox.addEventListener("keydown", function (e) {
+        if ((e.key === "ArrowRight" || e.key === "End" || e.key === "Tab") && hasAutofillSuffixSelected()) {
+          e.preventDefault();
+          acceptAutofillCompletion();
+          return;
+        }
+        if (e.key === "Backspace" || e.key === "Delete") {
+          if (hasAutofillSuffixSelected()) {
+            e.preventDefault();
+            removeAutofillSuffix();
+            dispatchOmniboxQuery(omnibox.value, false);
+            return;
+          }
+          omniboxLastInputWasDelete = true;
+        }
         if (e.key === "ArrowDown" && omniboxItems.length > 0) {
           e.preventDefault();
+          clearAutofillState();
           omniboxSelectedIdx = (omniboxSelectedIdx + 1) % omniboxItems.length;
           const chosen = omniboxItems[omniboxSelectedIdx];
           omnibox.value = chosen.kind === "search" ? chosen.title : chosen.url;
@@ -1292,6 +1575,7 @@
         }
         if (e.key === "ArrowUp" && omniboxItems.length > 0) {
           e.preventDefault();
+          clearAutofillState();
           omniboxSelectedIdx = omniboxSelectedIdx <= 0
             ? omniboxItems.length - 1
             : omniboxSelectedIdx - 1;
@@ -1305,6 +1589,8 @@
           let target = omnibox.value.trim();
           if (omniboxSelectedIdx >= 0 && omniboxItems[omniboxSelectedIdx]) {
             target = omniboxItems[omniboxSelectedIdx].url;
+          } else if (hasAutofillSuffixSelected() && omniboxAutofillUrl) {
+            target = omniboxAutofillUrl;
           }
           closeOmniboxPopup();
           if (target.length > 0) {
@@ -1312,6 +1598,11 @@
             omnibox.blur();
           }
         } else if (e.key === "Escape") {
+          if (hasAutofillSuffixSelected()) {
+            e.preventDefault();
+            removeAutofillSuffix();
+            return;
+          }
           if (activePopupKind === "omnibox") {
             e.preventDefault();
             omnibox.value = omniboxTypedValue;
@@ -1360,8 +1651,7 @@
           sendIpc("reopen_closed_tab");
         } else if (!e.shiftKey && key === "t") {
           e.preventDefault();
-          isMouseClosing = false;
-          lockedTabWidth = null;
+          frozenTabWidth = null;
           sendIpc("new_tab");
         } else if (!e.shiftKey && key === "w") {
           e.preventDefault();
@@ -1406,10 +1696,19 @@
         }
       }
 
-      const TAB_ANIM_DURATION = 180;
-      const TAB_MAX_WIDTH = 240;
-      const TAB_MIN_WIDTH = 36;
-      const TAB_GAP = 2;
+      const TAB_LAYOUT_CONSTANTS = Object.freeze({
+        ANIM_DURATION: 180,
+        MAX_WIDTH: 240,
+        MIN_WIDTH: 48,
+        GAP: 2,
+        TITLE_HIDE_WIDTH: 60,
+        TITLE_FULL_WIDTH: 110,
+        INACTIVE_CLOSE_HIDE_WIDTH: 56
+      });
+      const TAB_ANIM_DURATION = TAB_LAYOUT_CONSTANTS.ANIM_DURATION;
+      const TAB_MAX_WIDTH = TAB_LAYOUT_CONSTANTS.MAX_WIDTH;
+      const TAB_MIN_WIDTH = TAB_LAYOUT_CONSTANTS.MIN_WIDTH;
+      const TAB_GAP = TAB_LAYOUT_CONSTANTS.GAP;
 
       function computeTabWidth(tabCount, stripWidth) {
         if (tabCount <= 0) return TAB_MAX_WIDTH;
@@ -1419,9 +1718,29 @@
       }
 
       function computeTitleOpacity(tabWidth) {
-        if (tabWidth <= 75) return 0;
-        if (tabWidth >= 130) return 1;
-        return Math.round(((tabWidth - 75) / (130 - 75)) * 100) / 100;
+        if (tabWidth < TAB_LAYOUT_CONSTANTS.TITLE_HIDE_WIDTH) return 0;
+        if (tabWidth >= TAB_LAYOUT_CONSTANTS.TITLE_FULL_WIDTH) return 1;
+        const range = TAB_LAYOUT_CONSTANTS.TITLE_FULL_WIDTH - TAB_LAYOUT_CONSTANTS.TITLE_HIDE_WIDTH;
+        return Math.round(((tabWidth - TAB_LAYOUT_CONSTANTS.TITLE_HIDE_WIDTH) / range) * 100) / 100;
+      }
+
+      // Pure width-to-visibility calculation (depends only on tab's width & active state).
+      function computeTabVisibility(tabWidth, isActive) {
+        const showTitle = tabWidth >= TAB_LAYOUT_CONSTANTS.TITLE_HIDE_WIDTH;
+        const titleOpacity = computeTitleOpacity(tabWidth);
+        const isMicro = tabWidth < TAB_LAYOUT_CONSTANTS.INACTIVE_CLOSE_HIDE_WIDTH;
+        const showClose = Boolean(isActive) || !isMicro;
+        return { showTitle: showTitle, titleOpacity: titleOpacity, showClose: showClose, isMicro: isMicro };
+      }
+
+      function applyTabVisibility(tabEl, tabWidth, isActive) {
+        const vis = computeTabVisibility(tabWidth, isActive);
+        tabEl.dataset.titleHidden = vis.showTitle ? "false" : "true";
+        tabEl.dataset.micro = vis.isMicro ? "true" : "false";
+        tabEl.style.setProperty("--tab-title-opacity", String(vis.titleOpacity));
+        const titleEl = tabEl.querySelector(".tab-title");
+        if (titleEl) titleEl.style.opacity = String(vis.titleOpacity);
+        return vis;
       }
 
       function getAvailableStripWidth() {
@@ -1509,104 +1828,187 @@
         }
       }
 
-      const closingTabIds = new Set();
-      let isMouseClosing = false;
-      let lockedTabWidth = null;
+      const tabNodeMap = new Map();
+      const closingNodes = new Map();
+      let latestSnapshotIds = new Set();
+      let lastAppliedRevision = 0;
+      const MAX_CLOSING_MS = 500;
+      let frozenTabWidth = null;
+      const tabFlipAnims = new Map();
 
-      function closeTabOptimistically(tabId, isMouse) {
-        if (closingTabIds.has(tabId)) return;
-        closingTabIds.add(tabId);
+      function isTabAnimDebug() {
+        return window.__EMBER_TAB_ANIM_DEBUG === true
+          || /[?&]tabAnimDebug=1/.test(location.search)
+          || localStorage.getItem("ember_tab_anim_debug") === "1";
+      }
 
-        const tabEl = tabsContainer.querySelector('.tab[data-tab-id="' + tabId + '"]');
-
-        if (isMouse) {
-          isMouseClosing = true;
-          if (lockedTabWidth === null && tabEl) {
-            const rect = tabEl.getBoundingClientRect();
-            lockedTabWidth = Math.round(rect.width);
-          }
-        } else {
-          isMouseClosing = false;
-          lockedTabWidth = null;
+      function logTabAnim(kind, tabId, detail) {
+        if (isTabAnimDebug()) {
+          console.log("[tab-anim] t=" + performance.now().toFixed(2) + "ms " + kind + " tab=" + tabId + (detail ? " " + detail : ""));
         }
+      }
 
-        sendIpc("close_tab:" + tabId);
+      function isReducedMotion() {
+        return !currentState.tabAnimationsEnabled
+          || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      }
 
-        if (!tabEl) return;
+      // Single pure layout owner: computes integer pixel left and width for every tab.
+      function computeTabStripLayout(tabs, stripWidth, frozenWidth) {
+        if (!tabs || tabs.length === 0) {
+          return { width: TAB_LAYOUT_CONSTANTS.MAX_WIDTH, slots: [] };
+        }
+        const naturalWidth = computeTabWidth(tabs.length, stripWidth);
+        const slotWidth = frozenWidth !== null ? Math.min(frozenWidth, naturalWidth) : naturalWidth;
+        const step = slotWidth + TAB_GAP;
+        const slots = tabs.map(function (tab, idx) {
+          return {
+            id: tab.id,
+            left: Math.round(idx * step),
+            width: Math.round(slotWidth)
+          };
+        });
+        return { width: Math.round(slotWidth), slots: slots };
+      }
 
-        // Optimistically transfer active focus to neighbouring tab immediately
-        if (tabEl.classList.contains("active")) {
-          tabEl.classList.remove("active");
-          let nextActiveTab = null;
-          let sibling = tabEl.nextElementSibling;
-          while (sibling) {
-            if (sibling.classList.contains("tab") && !sibling.classList.contains("tab-closing")) {
-              nextActiveTab = sibling;
-              break;
-            }
-            sibling = sibling.nextElementSibling;
+      function cancelFlipAnim(tabId, reason) {
+        const anim = tabFlipAnims.get(tabId);
+        if (anim) {
+          tabFlipAnims.delete(tabId);
+          anim.cancel();
+          if (reason) {
+            logTabAnim("retarget", tabId, reason);
           }
-          if (!nextActiveTab) {
-            sibling = tabEl.previousElementSibling;
-            while (sibling) {
-              if (sibling.classList.contains("tab") && !sibling.classList.contains("tab-closing")) {
-                nextActiveTab = sibling;
-                break;
-              }
-              sibling = sibling.previousElementSibling;
+          return true;
+        }
+        return false;
+      }
+
+      function removeNode(tabId) {
+        const rec = closingNodes.get(tabId);
+        if (!rec) return;
+        closingNodes.delete(tabId);
+        if (rec.timerId !== null) {
+          clearTimeout(rec.timerId);
+        }
+        if (rec.anim) {
+          rec.anim.oncancel = null;
+          try {
+            if (rec.anim.playState === "running" || rec.anim.playState === "pending") {
+              rec.anim.cancel();
             }
-          }
-          if (nextActiveTab) {
-            nextActiveTab.classList.add("active");
-            const nextId = parseInt(nextActiveTab.dataset.tabId, 10);
-            if (currentState && currentState.tabs) {
-              const nextTabInfo = currentState.tabs.find(function (t) { return t.id === nextId; });
-              if (nextTabInfo) {
-                omnibox.value = nextTabInfo.url === "ember://newtab" ? "" : nextTabInfo.url;
-              }
-            }
+          } catch (_) {}
+        }
+        if (rec.el) {
+          rec.el.style.willChange = "";
+          if (rec.el.parentNode) {
+            rec.el.remove();
           }
         }
+        logTabAnim("finish", tabId, "close-removed");
+        sweepGhostTabs("removeNode");
+      }
 
-        if (activeDrag && activeDrag.tabId === tabId) {
-          stopAutoScroll();
-          if (activeDrag.tabEl && activeDrag.tabEl.hasPointerCapture && activeDrag.tabEl.hasPointerCapture(activeDrag.pointerId)) {
-            try { activeDrag.tabEl.releasePointerCapture(activeDrag.pointerId); } catch (_) {}
+      function sweepGhostTabs(source) {
+        const now = performance.now();
+        const expiredIds = [];
+        closingNodes.forEach(function (rec, id) {
+          if (now - rec.startedAt >= MAX_CLOSING_MS) {
+            expiredIds.push(id);
           }
-          const allTabs = tabsContainer.querySelectorAll(".tab");
-          allTabs.forEach(function (el) {
-            el.classList.remove("dragging", "drag-dropping", "animating");
-            el.style.removeProperty("--drag-x");
-            el.style.removeProperty("--tab-shift-x");
+        });
+        expiredIds.forEach(function (id) {
+          console.warn("[tab-sweeper] force-removed expired closing tab", id, "via", source);
+          removeNode(id);
+        });
+
+        if (closingNodes.size === 0 && tabFlipAnims.size === 0 && tabsContainer) {
+          tabsContainer.querySelectorAll(".tab").forEach(function (el) {
+            const id = parseInt(el.dataset.tabId, 10);
+            const expected = !isNaN(id) && latestSnapshotIds.has(id) && tabNodeMap.get(id) === el;
+            if (!expected) {
+              console.warn("[tab-sweeper] removed ghost tab", id, "via", source);
+              if (!isNaN(id) && tabNodeMap.get(id) === el) {
+                tabNodeMap.delete(id);
+              }
+              if (el.parentNode) {
+                el.remove();
+              }
+            }
           });
-          activeDrag = null;
         }
+      }
 
-        tabEl.classList.add("tab-closing", "animating");
+      setInterval(function () {
+        sweepGhostTabs("idle-1s");
+      }, 1000);
+
+      function startClosingAnimation(tabEl, tabId, startWidth) {
+        cancelFlipAnim(tabId, "closing");
+        if (closingNodes.has(tabId)) {
+          removeNode(tabId);
+        }
+        tabEl.classList.add("tab-closing");
         tabEl.style.pointerEvents = "none";
         tabEl.draggable = false;
-        tabEl.style.width = "0px";
-        tabEl.style.opacity = "0";
 
-        let cleanedUp = false;
-        function cleanup() {
-          if (cleanedUp) return;
-          cleanedUp = true;
-          tabEl.removeEventListener("transitionend", onEnd);
+        if (isReducedMotion() || typeof tabEl.animate !== "function") {
+          tabEl.style.willChange = "";
           if (tabEl.parentNode) {
             tabEl.remove();
           }
-          closingTabIds.delete(tabId);
+          logTabAnim("finish", tabId, "close-instant");
+          sweepGhostTabs("close-instant");
+          return;
         }
 
-        function onEnd(e) {
-          if (e.propertyName === "width" || e.propertyName === "opacity") {
-            cleanup();
+        const w = Math.max(0, Math.round(startWidth));
+        tabEl.style.willChange = "width, opacity";
+        logTabAnim("start", tabId, "close from=" + w + "px");
+        const anim = tabEl.animate(
+          [
+            { width: w + "px", opacity: 1 },
+            { width: "0px", opacity: 0 }
+          ],
+          {
+            duration: TAB_ANIM_DURATION,
+            easing: "cubic-bezier(0.2, 0, 0, 1)",
+            fill: "forwards"
           }
+        );
+        const timerId = setTimeout(function () {
+          removeNode(tabId);
+        }, TAB_ANIM_DURATION + 50);
+
+        closingNodes.set(tabId, {
+          el: tabEl,
+          startedAt: performance.now(),
+          anim: anim,
+          timerId: timerId
+        });
+
+        anim.oncancel = function () {
+          removeNode(tabId);
+        };
+        anim.finished.then(
+          function () { removeNode(tabId); },
+          function () { removeNode(tabId); }
+        );
+      }
+
+      function closeTabOptimistically(tabId, isMouse) {
+        const tabEl = tabNodeMap.get(tabId);
+        const tabWidthNow = tabEl ? Math.round(tabEl.getBoundingClientRect().width) : 0;
+
+        if (isMouse) {
+          if (frozenTabWidth === null && tabWidthNow > 0) {
+            frozenTabWidth = tabWidthNow;
+          }
+        } else {
+          frozenTabWidth = null;
         }
 
-        tabEl.addEventListener("transitionend", onEnd);
-        setTimeout(cleanup, TAB_ANIM_DURATION + 60);
+        sendIpc("close_tab:" + tabId);
       }
 
       let activeDrag = null;
@@ -1706,18 +2108,14 @@
 
         const inner = document.createElement("div");
         inner.className = "tab-inner";
-        inner.style.width = targetWidth + "px";
 
         const iconSpan = document.createElement("span");
         iconSpan.className = "tab-icon";
         renderTabIcon(iconSpan, tab);
 
-        const titleOpacity = computeTitleOpacity(targetWidth);
         const titleSpan = document.createElement("span");
         titleSpan.className = "tab-title";
         titleSpan.textContent = tab.title || tab.url || "New Tab";
-        titleSpan.style.opacity = String(titleOpacity);
-        tabEl.style.setProperty("--tab-title-opacity", String(titleOpacity));
 
         const closeBtn = document.createElement("button");
         closeBtn.className = "tab-close";
@@ -1733,6 +2131,7 @@
         inner.appendChild(titleSpan);
         inner.appendChild(closeBtn);
         tabEl.appendChild(inner);
+        applyTabVisibility(tabEl, targetWidth, tab.id === currentState.activeTabId);
 
         tabEl.addEventListener("pointerdown", function (e) {
           if (e.button !== 0 || e.target.closest(".tab-close")) return;
@@ -1877,83 +2276,99 @@
         return tabEl;
       }
 
+      function animateTabFlip(tabEl, tabId, prevLeft, nextLeft) {
+        const dx = Math.round(prevLeft - nextLeft);
+        if (dx === 0 || isReducedMotion() || typeof tabEl.animate !== "function" || (activeDrag && activeDrag.isDragging)) {
+          return;
+        }
+        tabEl.style.willChange = "transform";
+        logTabAnim("start", tabId, "flip dx=" + dx + "px");
+        const anim = tabEl.animate(
+          [
+            { transform: "translate3d(" + dx + "px, 0, 0)" },
+            { transform: "translate3d(0px, 0, 0)" }
+          ],
+          {
+            duration: TAB_ANIM_DURATION,
+            easing: "cubic-bezier(0.2, 0, 0, 1)"
+          }
+        );
+        tabFlipAnims.set(tabId, anim);
+        function cleanup() {
+          if (tabFlipAnims.get(tabId) === anim) {
+            tabFlipAnims.delete(tabId);
+            tabEl.style.willChange = "";
+            logTabAnim("finish", tabId, "flip");
+          }
+        }
+        anim.finished.then(cleanup, cleanup);
+      }
+
       function renderTabs() {
         if (!currentState || !currentState.tabs) return;
 
-        const currentDomTabs = new Map();
-        tabsContainer.querySelectorAll(".tab").forEach(function (el) {
-          const id = parseInt(el.dataset.tabId, 10);
-          if (!isNaN(id)) {
-            currentDomTabs.set(id, el);
-          }
+        // Phase 1: Batched reads before any DOM writes or animation cancellations
+        const stripWidth = getAvailableStripWidth();
+        const layout = computeTabStripLayout(currentState.tabs, stripWidth, frozenTabWidth);
+        const targetWidth = layout.width;
+
+        const prevLefts = new Map();
+        const prevWidths = new Map();
+        tabNodeMap.forEach(function (el, id) {
+          const rect = el.getBoundingClientRect();
+          prevLefts.set(id, Math.round(rect.left));
+          prevWidths.set(id, Math.round(rect.width));
         });
 
         const activeIds = new Set(currentState.tabs.map(function (t) { return t.id; }));
-        currentDomTabs.forEach(function (el, id) {
-          if (!activeIds.has(id)) {
-            if (closingTabIds.has(id) || el.classList.contains("tab-closing")) {
-              return;
-            }
-            closingTabIds.add(id);
-            el.classList.add("tab-closing");
-            el.style.pointerEvents = "none";
-            el.draggable = false;
-            el.style.width = "0px";
-            el.style.opacity = "0";
-            let cleanedUp = false;
-            function cleanup() {
-              if (cleanedUp) return;
-              cleanedUp = true;
-              el.removeEventListener("transitionend", onEnd);
-              if (el.parentNode) el.remove();
-              closingTabIds.delete(id);
-            }
-            function onEnd(e) {
-              if (e.propertyName === "width" || e.propertyName === "opacity") cleanup();
-            }
-            el.addEventListener("transitionend", onEnd);
-            setTimeout(cleanup, TAB_ANIM_DURATION + 60);
+        latestSnapshotIds = activeIds;
+
+        // If any closing node's ID reappeared in the snapshot (reopened/recycled), remove it immediately.
+        closingNodes.forEach(function (_rec, id) {
+          if (activeIds.has(id)) {
+            removeNode(id);
           }
         });
 
-        const stripWidth = getAvailableStripWidth();
-        let targetWidth = computeTabWidth(currentState.tabs.length, stripWidth);
+        // Phase 2: Reconcile tabNodeMap against snapshot — animate out removed tabs, cancel active FLIP on surviving tabs
+        const idsToClose = [];
+        tabNodeMap.forEach(function (el, id) {
+          if (!activeIds.has(id)) {
+            idsToClose.push(id);
+          } else {
+            cancelFlipAnim(id, "retarget-render");
+          }
+        });
+        idsToClose.forEach(function (id) {
+          const el = tabNodeMap.get(id);
+          tabNodeMap.delete(id);
+          if (activeDrag && activeDrag.tabId === id) {
+            stopAutoScroll();
+            activeDrag = null;
+          }
+          if (el) {
+            startClosingAnimation(el, id, prevWidths.get(id) || 0);
+          }
+        });
 
-        // Chrome behavior: keep remaining tabs at lockedTabWidth while mouse is in strip
-        if (isMouseClosing && lockedTabWidth !== null) {
-          targetWidth = Math.min(lockedTabWidth, targetWidth);
-        }
-
-        const titleOpacity = computeTitleOpacity(targetWidth);
-        const isTitleHidden = targetWidth <= 75;
-        const isMicro = targetWidth <= 52;
-
+        // Phase 3: Batched DOM writes (no layout reads in this loop)
+        const tabElementsByIndex = [];
         const newTabEls = [];
 
         currentState.tabs.forEach(function (tab) {
-          let tabEl = currentDomTabs.get(tab.id);
+          let tabEl = tabNodeMap.get(tab.id);
+          const isActive = tab.id === currentState.activeTabId;
           if (tabEl) {
-            if (tabEl.classList.contains("tab-closing")) return;
-
-            tabEl.classList.toggle("active", tab.id === currentState.activeTabId);
+            tabEl.classList.toggle("active", isActive);
             tabEl.classList.toggle("suspended", Boolean(tab.suspended));
-            tabEl.dataset.titleHidden = isTitleHidden ? "true" : "false";
-            tabEl.dataset.micro = isMicro ? "true" : "false";
-            tabEl.style.setProperty("--tab-title-opacity", String(titleOpacity));
 
             const statusSuffix = tab.suspended ? " (Suspended - click to restore)" : "";
             tabEl.title = (tab.title || tab.url) + statusSuffix + "\n" + tab.url + "\nRight-click to duplicate";
 
-            const inner = tabEl.querySelector(".tab-inner");
-            if (inner) {
-              inner.style.width = targetWidth + "px";
-            }
-
             const titleEl = tabEl.querySelector(".tab-title");
             const newTitle = tab.title || tab.url || "New Tab";
-            if (titleEl) {
-              if (titleEl.textContent !== newTitle) titleEl.textContent = newTitle;
-              titleEl.style.opacity = String(titleOpacity);
+            if (titleEl && titleEl.textContent !== newTitle) {
+              titleEl.textContent = newTitle;
             }
 
             const iconSpan = tabEl.querySelector(".tab-icon");
@@ -1970,38 +2385,80 @@
 
             tabEl.style.width = targetWidth + "px";
             tabEl.style.opacity = "1";
-
-            tabsContainer.appendChild(tabEl);
+            applyTabVisibility(tabEl, targetWidth, isActive);
+            tabElementsByIndex.push({ id: tab.id, el: tabEl, isNew: false });
           } else {
             tabEl = createTabElement(tab, targetWidth);
-            tabEl.dataset.titleHidden = isTitleHidden ? "true" : "false";
-            tabEl.dataset.micro = isMicro ? "true" : "false";
             tabEl.dataset.loading = tab.loading ? "true" : "false";
             tabEl.dataset.favicon = tab.favicon || "";
-            tabEl.style.setProperty("--tab-title-opacity", String(titleOpacity));
+            tabEl.style.width = targetWidth + "px";
+            tabEl.style.opacity = "1";
+            applyTabVisibility(tabEl, targetWidth, isActive);
+            tabNodeMap.set(tab.id, tabEl);
+            newTabEls.push({ id: tab.id, el: tabEl });
+            tabElementsByIndex.push({ id: tab.id, el: tabEl, isNew: true });
+          }
+        });
 
-            const titleEl = tabEl.querySelector(".tab-title");
-            if (titleEl) titleEl.style.opacity = String(titleOpacity);
+        // Insert new tabs or fix order only when relative order changed (never move .tab-closing)
+        let nextSurvivingEl = null;
+        for (let i = tabElementsByIndex.length - 1; i >= 0; i--) {
+          const item = tabElementsByIndex[i];
+          const el = item.el;
+          if (item.isNew) {
+            tabsContainer.insertBefore(el, nextSurvivingEl);
+          } else {
+            let sib = el.nextElementSibling;
+            while (sib && sib.classList.contains("tab-closing")) {
+              sib = sib.nextElementSibling;
+            }
+            if (sib !== nextSurvivingEl) {
+              tabsContainer.insertBefore(el, nextSurvivingEl);
+            }
+          }
+          nextSurvivingEl = el;
+        }
 
-            tabEl.style.width = "0px";
-            tabEl.style.opacity = "0";
+        // Phase 4: Batched read of final positions, then start WAAPI FLIP & open animations
+        const nextLefts = new Map();
+        tabElementsByIndex.forEach(function (item) {
+          if (!item.isNew && prevLefts.has(item.id)) {
+            nextLefts.set(item.id, Math.round(item.el.getBoundingClientRect().left));
+          }
+        });
 
-            tabsContainer.appendChild(tabEl);
-            newTabEls.push(tabEl);
+        tabElementsByIndex.forEach(function (item) {
+          if (!item.isNew && prevLefts.has(item.id) && nextLefts.has(item.id)) {
+            animateTabFlip(item.el, item.id, prevLefts.get(item.id), nextLefts.get(item.id));
           }
         });
 
         if (newTabEls.length > 0) {
-          newTabEls.forEach(function (el) {
-            el.classList.add("animating");
-            void el.offsetWidth;
-          });
-
-          newTabEls.forEach(function (el) {
-            el.style.width = targetWidth + "px";
-            el.style.opacity = "1";
+          const reduceMotion = isReducedMotion();
+          newTabEls.forEach(function (item) {
+            const el = item.el;
+            if (!reduceMotion && typeof el.animate === "function") {
+              el.style.willChange = "width, opacity";
+              logTabAnim("start", item.id, "open to=" + targetWidth + "px");
+              const anim = el.animate(
+                [
+                  { width: "0px", opacity: 0 },
+                  { width: targetWidth + "px", opacity: 1 }
+                ],
+                {
+                  duration: TAB_ANIM_DURATION,
+                  easing: "cubic-bezier(0.2, 0, 0, 1)"
+                }
+              );
+              anim.finished.then(function () {
+                el.style.willChange = "";
+                logTabAnim("finish", item.id, "open");
+              }, function () {
+                el.style.willChange = "";
+              });
+            }
             if (el.classList.contains("active")) {
-              el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+              el.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "nearest", inline: "nearest" });
             }
           });
         }
@@ -2015,22 +2472,18 @@
 
         updateScrollButtons();
         scrollActiveTabIntoView();
-
-        if (newTabEls.length > 0) {
-          setTimeout(function () {
-            newTabEls.forEach(function (el) {
-              el.classList.remove("animating");
-            });
-            updateScrollButtons();
-            scrollActiveTabIntoView();
-          }, TAB_ANIM_DURATION + 30);
+        sweepGhostTabs("snapshot");
+        if (currentState.debugAssertions) {
+          const liveCount = tabsContainer.querySelectorAll(".tab:not(.tab-closing)").length;
+          if (liveCount !== currentState.tabs.length) {
+            console.error("[tab-reconcile] ASSERTION FAILED: DOM liveCount=" + liveCount + " !== rustTabs=" + currentState.tabs.length);
+          }
         }
       }
 
       tabStrip.addEventListener("mouseleave", function () {
-        if (isMouseClosing) {
-          isMouseClosing = false;
-          lockedTabWidth = null;
+        if (frozenTabWidth !== null) {
+          frozenTabWidth = null;
           if (currentState && currentState.tabs) {
             updateTabsLayout(false);
           }
@@ -2065,35 +2518,51 @@
 
       function updateTabsLayout(disableAnimations) {
         if (!currentState || !currentState.tabs || currentState.tabs.length === 0) return;
+
+        // Batched reads
         const stripWidth = getAvailableStripWidth();
-        let targetWidth = computeTabWidth(currentState.tabs.length, stripWidth);
-        if (isMouseClosing && lockedTabWidth !== null) {
-          targetWidth = Math.min(lockedTabWidth, targetWidth);
-        }
+        const layout = computeTabStripLayout(currentState.tabs, stripWidth, frozenTabWidth);
+        const targetWidth = layout.width;
 
-        const titleOpacity = computeTitleOpacity(targetWidth);
-        const isTitleHidden = targetWidth <= 75;
-        const isMicro = targetWidth <= 52;
-
-        if (disableAnimations) {
-          tabsContainer.classList.add("no-tab-transitions");
-        } else {
-          tabsContainer.classList.remove("no-tab-transitions");
-        }
-
-        const tabs = tabsContainer.querySelectorAll(".tab:not(.tab-closing)");
+        const tabs = Array.from(tabsContainer.querySelectorAll(".tab:not(.tab-closing)"));
+        const prevLefts = new Map();
         tabs.forEach(function (tabEl) {
-          tabEl.dataset.titleHidden = isTitleHidden ? "true" : "false";
-          tabEl.dataset.micro = isMicro ? "true" : "false";
-          tabEl.style.width = targetWidth + "px";
-          tabEl.style.setProperty("--tab-title-opacity", String(titleOpacity));
-
-          const inner = tabEl.querySelector(".tab-inner");
-          if (inner) inner.style.width = targetWidth + "px";
-
-          const titleEl = tabEl.querySelector(".tab-title");
-          if (titleEl) titleEl.style.opacity = String(titleOpacity);
+          const id = parseInt(tabEl.dataset.tabId, 10);
+          if (!isNaN(id)) {
+            prevLefts.set(id, Math.round(tabEl.getBoundingClientRect().left));
+          }
         });
+
+        // Cancel active FLIP animations before writing final layout
+        tabs.forEach(function (tabEl) {
+          const id = parseInt(tabEl.dataset.tabId, 10);
+          if (!isNaN(id)) {
+            cancelFlipAnim(id, disableAnimations ? "disable-anim" : "retarget-layout");
+          }
+        });
+
+        // Batched writes
+        tabs.forEach(function (tabEl) {
+          tabEl.style.width = targetWidth + "px";
+          applyTabVisibility(tabEl, targetWidth, tabEl.classList.contains("active"));
+        });
+
+        // Batched read of final positions + start WAAPI FLIP
+        if (!disableAnimations) {
+          const nextLefts = new Map();
+          tabs.forEach(function (tabEl) {
+            const id = parseInt(tabEl.dataset.tabId, 10);
+            if (!isNaN(id) && prevLefts.has(id)) {
+              nextLefts.set(id, Math.round(tabEl.getBoundingClientRect().left));
+            }
+          });
+          tabs.forEach(function (tabEl) {
+            const id = parseInt(tabEl.dataset.tabId, 10);
+            if (!isNaN(id) && prevLefts.has(id) && nextLefts.has(id)) {
+              animateTabFlip(tabEl, id, prevLefts.get(id), nextLefts.get(id));
+            }
+          });
+        }
 
         if (activeDrag && activeDrag.isDragging) {
           activeDrag.slotWidth = targetWidth + TAB_GAP;
@@ -2155,6 +2624,12 @@
       };
 
       window.__emberUpdateState = function (nextState) {
+        if (typeof nextState.tabRevision === "number") {
+          if (nextState.tabRevision < lastAppliedRevision) {
+            return;
+          }
+          lastAppliedRevision = nextState.tabRevision;
+        }
         const prevActiveId = currentState.activeTabId;
         currentState = nextState;
 
@@ -2179,14 +2654,30 @@
           omnibox.value = active.url === "ember://newtab" ? "" : active.url;
         }
 
-        if (currentState.activeBookmarked) {
-          bookmarkBtn.className = "omnibox-action-btn bookmarked";
-          bookmarkBtn.textContent = "★";
-          bookmarkBtn.title = "Remove bookmark (Ctrl+D)";
-        } else {
-          bookmarkBtn.className = "omnibox-action-btn";
-          bookmarkBtn.textContent = "☆";
-          bookmarkBtn.title = "Bookmark this page (Ctrl+D)";
+        const isBookmarked = !!currentState.activeBookmarked;
+        const tabId = currentState.activeTabId;
+        const toggledOnSameTab =
+          bookmarkBtn.dataset.tabId === String(tabId) &&
+          bookmarkBtn.dataset.bookmarked !== String(isBookmarked);
+        bookmarkBtn.dataset.tabId = String(tabId ?? "");
+        bookmarkBtn.dataset.bookmarked = String(isBookmarked);
+        bookmarkBtn.classList.toggle("bookmarked", isBookmarked);
+        bookmarkBtn.title = isBookmarked
+          ? "Remove bookmark (Ctrl+D)"
+          : "Bookmark this page (Ctrl+D)";
+        const starPath = bookmarkBtn.querySelector("path");
+        if (starPath) {
+          starPath.setAttribute(
+            "d",
+            isBookmarked
+              ? "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"
+              : "M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"
+          );
+        }
+        if (toggledOnSameTab) {
+          bookmarkBtn.classList.remove("popping");
+          void bookmarkBtn.offsetWidth;
+          bookmarkBtn.classList.add("popping");
         }
 
         const zoomPct = currentState.activeZoomPercent || 100;
@@ -2379,20 +2870,20 @@
         }
 
         try {
-          // 1. Rapid open/close spam
+          // 1. Rapid close via authoritative snapshots (1, 5, 20 tabs) + out-of-order revision rejection
           const spamTabs = [];
-          for (let i = 1; i <= 8; i++) {
+          for (let i = 1; i <= 20; i++) {
             spamTabs.push({ id: i, title: "Spam Tab " + i, url: "https://example" + i + ".com", favicon: "", loading: false, suspended: false, blockedCount: 0 });
           }
-          window.__emberUpdateState({ ...currentState, activeTabId: 8, tabs: spamTabs });
-          // Rapidly close 4 tabs
-          closeTabOptimistically(1, false);
-          closeTabOptimistically(2, false);
-          closeTabOptimistically(3, false);
-          closeTabOptimistically(4, false);
-          await new Promise(function (r) { setTimeout(r, 220); });
-          const remTabs = tabsContainer.querySelectorAll(".tab:not(.tab-closing)");
-          logTest("rapid_open_close_spam", remTabs.length === 4, "Remaining non-closing tabs count: " + remTabs.length);
+          window.__emberUpdateState({ ...currentState, tabRevision: 100, activeTabId: 20, tabs: spamTabs });
+          // Stale revision 99 must be ignored
+          window.__emberUpdateState({ ...currentState, tabRevision: 99, activeTabId: 1, tabs: [spamTabs[0]] });
+          const afterStale = tabsContainer.querySelectorAll(".tab:not(.tab-closing)").length;
+          // Rapidly close 15 tabs via snapshots
+          window.__emberUpdateState({ ...currentState, tabRevision: 101, activeTabId: 20, tabs: spamTabs.slice(15) });
+          await new Promise(function (r) { setTimeout(r, 260); });
+          const remTabs = tabsContainer.querySelectorAll(".tab");
+          logTest("rapid_open_close_spam", afterStale === 20 && remTabs.length === 5, "After stale=20, remaining tabs=" + remTabs.length);
 
           // 2. Interrupted opening animation
           const inter1 = [

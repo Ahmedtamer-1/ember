@@ -60,6 +60,8 @@ pub struct TabManager {
     next_id: usize,
     recently_closed: Vec<ClosedTab>,
     suspend_timeout: Duration,
+    /// Closing tab WebViews kept visible until the replacement tab finishes its first paint.
+    retiring_webviews: Vec<WebView>,
 }
 
 impl Default for TabManager {
@@ -77,6 +79,7 @@ impl TabManager {
             next_id: 1,
             recently_closed: Vec::new(),
             suspend_timeout,
+            retiring_webviews: Vec::new(),
         }
     }
 
@@ -227,21 +230,41 @@ impl TabManager {
         let prev_active_id = self.active_tab_id;
         self.active_tab_id = tab_id;
 
+        let target_has_webview = self
+            .tabs
+            .iter()
+            .find(|t| t.id == tab_id)
+            .is_some_and(|t| t.webview.is_some());
+
         for tab in &mut self.tabs {
             if tab.id == prev_active_id || tab.id == tab_id {
                 tab.last_active_at = now;
             }
-            let is_active = tab.id == tab_id;
-            if is_active && tab.is_suspended {
+            if tab.id == tab_id && tab.is_suspended {
                 tab.is_suspended = false;
                 tab.pending_scroll_restore = true;
             }
-            if let Some(webview) = &tab.webview {
-                let _ = webview.set_visible(is_active);
-                if is_active {
-                    let _ = webview.focus();
+        }
+        // If the target tab already has a materialized WebView, show it FIRST before hiding
+        // any other WebView so an empty window background is never exposed between swaps.
+        if target_has_webview {
+            if let Some(target_wv) = self
+                .tabs
+                .iter()
+                .find(|t| t.id == tab_id)
+                .and_then(|t| t.webview.as_ref())
+            {
+                let _ = target_wv.set_visible(true);
+                let _ = target_wv.focus();
+            }
+            for tab in &self.tabs {
+                if tab.id != tab_id {
+                    if let Some(webview) = &tab.webview {
+                        let _ = webview.set_visible(false);
+                    }
                 }
             }
+            self.retire_all_old_webviews();
         }
         true
     }
@@ -302,10 +325,8 @@ impl TabManager {
             return CloseTabOutcome::Closed;
         };
 
-        let removed = self.tabs.remove(index);
-        if let Some(webview) = &removed.webview {
-            let _ = webview.set_visible(false);
-        }
+        let mut removed = self.tabs.remove(index);
+        let removed_wv = removed.webview.take();
 
         let closed_entry = ClosedTab {
             title: removed.title,
@@ -313,7 +334,6 @@ impl TabManager {
             favicon_url: removed.favicon_url,
             scroll_position: removed.scroll_position,
         };
-        drop(removed.webview);
 
         if self.recently_closed.len() >= MAX_RECENTLY_CLOSED {
             self.recently_closed.remove(0);
@@ -321,6 +341,10 @@ impl TabManager {
         self.recently_closed.push(closed_entry);
 
         if self.tabs.is_empty() {
+            if let Some(wv) = removed_wv {
+                let _ = wv.set_visible(false);
+            }
+            self.retire_all_old_webviews();
             self.active_tab_id = 0;
             return CloseTabOutcome::LastTabClosed;
         }
@@ -329,6 +353,22 @@ impl TabManager {
             let next_index = index.min(self.tabs.len() - 1);
             let next_id = self.tabs[next_index].id;
             self.switch_to(next_id);
+            let next_is_live = self
+                .tabs
+                .iter()
+                .find(|t| t.id == next_id)
+                .is_some_and(|t| t.webview.is_some());
+            if let Some(wv) = removed_wv {
+                if next_is_live {
+                    // Replacement tab is already visible on top; safe to hide and drop now.
+                    let _ = wv.set_visible(false);
+                } else {
+                    // Keep the closing WebView visible until `next_id` finishes its first paint.
+                    self.retiring_webviews.push(wv);
+                }
+            }
+        } else if let Some(wv) = removed_wv {
+            let _ = wv.set_visible(false);
         }
 
         CloseTabOutcome::Closed
@@ -375,14 +415,11 @@ impl TabManager {
         }
     }
 
-    /// Attaches a newly created `WebView` to `tab_id`.
+    /// Attaches a newly created `WebView` to `tab_id`, keeping it hidden until `reveal_tab`
+    /// is called after its first paint (or fallback timeout).
     pub fn attach_webview(&mut self, tab_id: usize, webview: WebView) -> bool {
-        let is_active = self.active_tab_id == tab_id;
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-            let _ = webview.set_visible(is_active);
-            if is_active {
-                let _ = webview.focus();
-            }
+            let _ = webview.set_visible(false);
             tab.is_suspended = false;
             tab.is_loading = true;
             tab.last_active_at = Instant::now();
@@ -390,6 +427,40 @@ impl TabManager {
             return true;
         }
         false
+    }
+
+    /// Reveals `tab_id`'s WebView and hides all other tabs' WebViews when `tab_id` is still active.
+    pub fn reveal_tab(&mut self, tab_id: usize) -> bool {
+        if self.active_tab_id != tab_id {
+            return false;
+        }
+        let Some(target_wv) = self
+            .tabs
+            .iter()
+            .find(|t| t.id == tab_id)
+            .and_then(|t| t.webview.as_ref())
+        else {
+            return false;
+        };
+        // Show the newly painted tab FIRST, then hide old/retiring WebViews so zero frames
+        // ever expose the parent window background.
+        let _ = target_wv.set_visible(true);
+        let _ = target_wv.focus();
+        for tab in &self.tabs {
+            if tab.id != tab_id {
+                if let Some(webview) = &tab.webview {
+                    let _ = webview.set_visible(false);
+                }
+            }
+        }
+        self.retire_all_old_webviews();
+        true
+    }
+
+    fn retire_all_old_webviews(&mut self) {
+        for wv in self.retiring_webviews.drain(..) {
+            let _ = wv.set_visible(false);
+        }
     }
 
     /// Explicitly suspends a background tab (`tab_id != active_tab_id`), destroying its `WebView`
@@ -557,6 +628,9 @@ impl TabManager {
             if let Some(webview) = &tab.webview {
                 let _ = webview.set_bounds(content_bounds);
             }
+        }
+        for wv in &self.retiring_webviews {
+            let _ = wv.set_bounds(content_bounds);
         }
     }
 

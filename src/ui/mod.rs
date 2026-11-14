@@ -55,6 +55,22 @@ pub const PAGE_INIT_SCRIPT: &str = r#"
   }
   window.addEventListener("load", detectFavicon);
 
+  var paintNotified = false;
+  function notifyFirstPaint() {
+    if (paintNotified || window !== window.top) return;
+    paintNotified = true;
+    window.requestAnimationFrame(function () {
+      window.requestAnimationFrame(function () {
+        post("first_paint");
+      });
+    });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", notifyFirstPaint, { once: true });
+  } else {
+    notifyFirstPaint();
+  }
+
   var scrollScheduled = false;
   window.addEventListener(
     "scroll",
@@ -273,7 +289,11 @@ pub enum UiCommand {
     Print,
     OpenPopup(String),
     ClosePopup,
-    OmniboxSuggest { query_id: u64, query: String },
+    OmniboxSuggest {
+        query_id: u64,
+        allow_autofill: bool,
+        query: String,
+    },
     OmniboxSelect(isize),
     SwitchTab(usize),
     NextTab,
@@ -281,7 +301,10 @@ pub enum UiCommand {
     SwitchTabIndex(usize),
     CloseTab(usize),
     DuplicateTab(usize),
-    ReorderTab { dragged_id: usize, target_id: usize },
+    ReorderTab {
+        dragged_id: usize,
+        target_id: usize,
+    },
     SuspendTab(usize),
     ReopenClosedTab,
     Navigate(String),
@@ -305,6 +328,7 @@ pub enum UiCommand {
     WindowToggleMaximize,
     WindowClose,
     WindowSnap(SnapZone),
+    WindowResize(tao::window::ResizeDirection),
 }
 
 /// Parses a raw IPC message string sent from the top Chrome UI WebView.
@@ -373,6 +397,17 @@ pub fn parse_ipc_command(raw: &str) -> Option<UiCommand> {
                 })
             } else if let Some(snap_str) = trimmed.strip_prefix("window_snap:") {
                 SnapZone::from_str(snap_str).map(UiCommand::WindowSnap)
+            } else if let Some(dir_str) = trimmed.strip_prefix("window_resize:") {
+                match dir_str.trim() {
+                    "n" => Some(UiCommand::WindowResize(tao::window::ResizeDirection::North)),
+                    "nw" => Some(UiCommand::WindowResize(
+                        tao::window::ResizeDirection::NorthWest,
+                    )),
+                    "ne" => Some(UiCommand::WindowResize(
+                        tao::window::ResizeDirection::NorthEast,
+                    )),
+                    _ => None,
+                }
             } else if let Some(q) = trimmed.strip_prefix("find_query:") {
                 Some(UiCommand::FindQuery(q.to_owned()))
             } else if let Some(q) = trimmed.strip_prefix("find_next:") {
@@ -384,10 +419,19 @@ pub fn parse_ipc_command(raw: &str) -> Option<UiCommand> {
             } else if let Some(json) = trimmed.strip_prefix("open_popup:") {
                 Some(UiCommand::OpenPopup(json.trim().to_owned()))
             } else if let Some(rest) = trimmed.strip_prefix("omnibox_suggest:") {
-                let mut parts = rest.splitn(2, ':');
+                let mut parts = rest.splitn(3, ':');
                 let query_id = parts.next()?.trim().parse::<u64>().ok()?;
-                let query = parts.next().unwrap_or("").to_owned();
-                Some(UiCommand::OmniboxSuggest { query_id, query })
+                let second = parts.next().unwrap_or("");
+                let (allow_autofill, query) = if let Some(third) = parts.next() {
+                    (second.trim() != "0", third.to_owned())
+                } else {
+                    (true, second.to_owned())
+                };
+                Some(UiCommand::OmniboxSuggest {
+                    query_id,
+                    allow_autofill,
+                    query,
+                })
             } else if let Some(idx_str) = trimmed.strip_prefix("omnibox_select:") {
                 idx_str
                     .trim()
@@ -407,6 +451,7 @@ pub fn parse_ipc_command(raw: &str) -> Option<UiCommand> {
 /// `context_menu_init_script`, `ember://` internal pages, or `COSMETIC_DOCUMENT_CREATED_SCRIPT`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PageIpcEvent {
+    FirstPaint,
     Favicon(String),
     Scroll(f64, f64),
     CosmeticInit(String),
@@ -483,6 +528,7 @@ pub fn parse_page_ipc_event(raw: &str) -> Option<PageIpcEvent> {
         "ctx_inspect:" => Some(PageIpcEvent::ContextInspect),
         "history_clear:" => Some(PageIpcEvent::HistoryClear),
         "page_pointer_down" => Some(PageIpcEvent::PointerDown),
+        "first_paint" => Some(PageIpcEvent::FirstPaint),
         _ => {
             if let Some(idx_str) = trimmed.strip_prefix("shortcut:tab_index:") {
                 idx_str
@@ -650,9 +696,14 @@ fn extract_json_string_array(json: &str, key: &str) -> Vec<String> {
     items
 }
 
-/// Configures the `WindowBuilder` for an integrated custom titlebar with native drop shadow.
+/// Configures the `WindowBuilder` for an integrated custom titlebar with native frame behavior.
 pub fn configure_window_builder(builder: WindowBuilder) -> WindowBuilder {
-    platform::configure_window_builder(builder.with_decorations(false))
+    platform::configure_window_builder(builder)
+}
+
+/// Installs the custom borderless-with-native-frame window subclass (Windows 11 resize, snap, and maximized inset).
+pub fn install_window_frame(window: &Window) {
+    platform::install_window_frame(window);
 }
 
 /// Applies platform-native window frame attributes (Windows 11 rounded corners and immersive dark mode).
@@ -726,6 +777,33 @@ pub fn apply_theme_preference(window: &Window, pref: ThemePreference) {
     apply_window_chrome_style(window);
 }
 
+/// Resolves whether the effective theme is dark for `pref` given `window`.
+pub fn is_effective_dark(pref: ThemePreference, window: &Window) -> bool {
+    match pref {
+        ThemePreference::Dark => true,
+        ThemePreference::Light => false,
+        ThemePreference::System => matches!(window.theme(), Theme::Dark),
+    }
+}
+
+/// Returns the opaque content WebView background RGBA matching the effective theme (`#18181b` / `#f8fafc`).
+pub fn theme_background_rgba(pref: ThemePreference, window: &Window) -> wry::RGBA {
+    if is_effective_dark(pref, window) {
+        (24, 24, 27, 255)
+    } else {
+        (248, 250, 252, 255)
+    }
+}
+
+/// Returns the opaque Chrome toolbar WebView background RGBA matching the effective theme (`#202020` / `#f3f3f3`).
+pub fn chrome_background_rgba(pref: ThemePreference, window: &Window) -> wry::RGBA {
+    if is_effective_dark(pref, window) {
+        (32, 32, 32, 255)
+    } else {
+        (243, 243, 243, 255)
+    }
+}
+
 /// Applies the theme preference to a WebView so `prefers-color-scheme` follows it.
 #[cfg(target_os = "windows")]
 pub fn apply_webview_theme(webview: &wry::WebView, pref: ThemePreference) {
@@ -796,6 +874,7 @@ pub fn compute_layout_bounds(inner_size: PhysicalSize<u32>, scale_factor: f64) -
 
 /// Snapshot of state synced from Rust to the top Chrome UI WebView.
 pub struct ChromeSyncState<'a> {
+    pub tab_revision: u64,
     pub active_tab_id: usize,
     pub adblock_enabled: bool,
     pub active_site_allowlisted: bool,
@@ -816,7 +895,15 @@ pub struct ChromeSyncState<'a> {
 /// Builds a JavaScript invocation string that updates the Chrome UI WebView state.
 pub fn build_state_sync_script(state: &ChromeSyncState<'_>) -> String {
     let mut script = String::with_capacity(480 + state.tabs.len() * 180);
-    script.push_str("if(window.__emberUpdateState){window.__emberUpdateState({activeTabId:");
+    script.push_str("if(window.__emberUpdateState){window.__emberUpdateState({tabRevision:");
+    script.push_str(&state.tab_revision.to_string());
+    script.push_str(",debugAssertions:");
+    script.push_str(if cfg!(debug_assertions) {
+        "true"
+    } else {
+        "false"
+    });
+    script.push_str(",activeTabId:");
     script.push_str(&state.active_tab_id.to_string());
     script.push_str(",tabAnimationsEnabled:");
     script.push_str(if state.tab_animations_enabled {
@@ -941,7 +1028,7 @@ mod platform {
     use std::{mem::size_of, ptr};
 
     use tao::{
-        platform::windows::{WindowBuilderExtWindows, WindowExtWindows},
+        platform::windows::WindowExtWindows,
         window::{Window, WindowBuilder},
     };
 
@@ -955,8 +1042,32 @@ mod platform {
     const DWMWCP_ROUND: u32 = 2;
 
     const MONITOR_DEFAULTTONEAREST: u32 = 2;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
     const SWP_NOZORDER: u32 = 0x0004;
     const SWP_NOACTIVATE: u32 = 0x0010;
+    const SWP_FRAMECHANGED: u32 = 0x0020;
+
+    const WM_ERASEBKGND: u32 = 0x0014;
+    const WM_NCDESTROY: u32 = 0x0082;
+    const WM_NCCALCSIZE: u32 = 0x0083;
+    const WM_NCHITTEST: u32 = 0x0084;
+
+    // COLORREF (0x00BBGGRR) matching `theme_background_rgba`: #18181b (dark) and #f8fafc (light).
+    const DARK_BG_COLORREF: u32 = 0x001B_1818;
+    const LIGHT_BG_COLORREF: u32 = 0x00FC_FAF8;
+
+    static WINDOW_IS_DARK: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    const HTCLIENT: isize = 1;
+    const HTTOP: isize = 12;
+    const HTTOPLEFT: isize = 13;
+    const HTTOPRIGHT: isize = 14;
+
+    const SM_CXFRAME: i32 = 32;
+    const SM_CYFRAME: i32 = 33;
+    const SM_CXPADDEDBORDER: i32 = 92;
 
     #[repr(C)]
     #[derive(Default)]
@@ -968,12 +1079,35 @@ mod platform {
     }
 
     #[repr(C)]
+    struct NcCalcSizeParams {
+        rgrc: [WinRect; 3],
+        lppos: *mut c_void,
+    }
+
+    #[repr(C)]
+    struct Margins {
+        cx_left_width: i32,
+        cx_right_width: i32,
+        cy_top_height: i32,
+        cy_bottom_height: i32,
+    }
+
+    #[repr(C)]
     struct MonitorInfo {
         cb_size: u32,
         rc_monitor: WinRect,
         rc_work: WinRect,
         dw_flags: u32,
     }
+
+    type SubclassProc = unsafe extern "system" fn(
+        hwnd: isize,
+        msg: u32,
+        w_param: usize,
+        l_param: isize,
+        u_id_subclass: usize,
+        dw_ref_data: usize,
+    ) -> isize;
 
     #[link(name = "user32")]
     extern "system" {
@@ -985,6 +1119,13 @@ mod platform {
         ) -> i32;
         fn MonitorFromWindow(hwnd: isize, dw_flags: u32) -> isize;
         fn GetMonitorInfoW(hmonitor: isize, lpmi: *mut MonitorInfo) -> i32;
+        fn GetWindowRect(hwnd: isize, lp_rect: *mut WinRect) -> i32;
+        fn GetClientRect(hwnd: isize, lp_rect: *mut WinRect) -> i32;
+        fn FillRect(hdc: isize, lprc: *const WinRect, hbr: isize) -> i32;
+        fn InvalidateRect(hwnd: isize, lp_rect: *const WinRect, b_erase: i32) -> i32;
+        fn IsZoomed(hwnd: isize) -> i32;
+        fn GetDpiForWindow(hwnd: isize) -> u32;
+        fn GetSystemMetricsForDpi(n_index: i32, dpi: u32) -> i32;
         fn SetWindowPos(
             hwnd: isize,
             hwnd_insert_after: isize,
@@ -996,6 +1137,28 @@ mod platform {
         ) -> i32;
     }
 
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn CreateSolidBrush(color: u32) -> isize;
+        fn DeleteObject(ho: isize) -> i32;
+    }
+
+    #[link(name = "comctl32")]
+    extern "system" {
+        fn SetWindowSubclass(
+            hwnd: isize,
+            pfn_subclass: Option<SubclassProc>,
+            u_id_subclass: usize,
+            dw_ref_data: usize,
+        ) -> i32;
+        fn RemoveWindowSubclass(
+            hwnd: isize,
+            pfn_subclass: Option<SubclassProc>,
+            u_id_subclass: usize,
+        ) -> i32;
+        fn DefSubclassProc(hwnd: isize, msg: u32, w_param: usize, l_param: isize) -> isize;
+    }
+
     #[link(name = "dwmapi", kind = "raw-dylib")]
     extern "system" {
         fn DwmSetWindowAttribute(
@@ -1004,14 +1167,144 @@ mod platform {
             pv_attribute: *const c_void,
             cb_attribute: u32,
         ) -> i32;
+        fn DwmExtendFrameIntoClientArea(hwnd: isize, p_mar_inset: *const Margins) -> i32;
         fn DwmGetColorizationColor(pcr_colorization: *mut u32, pf_opaque_blend: *mut i32) -> i32;
     }
 
     pub fn configure_window_builder(builder: WindowBuilder) -> WindowBuilder {
-        builder.with_undecorated_shadow(true)
+        // Keep native WS_OVERLAPPEDWINDOW (WS_THICKFRAME | WS_CAPTION | WS_MAXIMIZEBOX | WS_MINIMIZEBOX)
+        // so Windows 11 native resize borders, Aero Snap, and Win+Arrow work cleanly; the visible
+        // caption is removed in `frame_subclass_proc` via `WM_NCCALCSIZE`.
+        builder.with_decorations(true)
+    }
+
+    pub fn install_window_frame(window: &Window) {
+        let hwnd = window.hwnd();
+        let margins = Margins {
+            cx_left_width: 0,
+            cx_right_width: 0,
+            cy_top_height: 1,
+            cy_bottom_height: 0,
+        };
+        // SAFETY: `hwnd` is a valid top-level window handle owned by `window`.
+        unsafe {
+            let _ = SetWindowSubclass(hwnd, Some(frame_subclass_proc), 1, 0);
+            let _ = DwmExtendFrameIntoClientArea(hwnd, ptr::addr_of!(margins));
+            let _ = SetWindowPos(
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
+    }
+
+    unsafe extern "system" fn frame_subclass_proc(
+        hwnd: isize,
+        msg: u32,
+        w_param: usize,
+        l_param: isize,
+        u_id_subclass: usize,
+        _dw_ref_data: usize,
+    ) -> isize {
+        match msg {
+            WM_ERASEBKGND => {
+                let hdc = w_param as isize;
+                if hdc != 0 {
+                    let mut rect = WinRect::default();
+                    if GetClientRect(hwnd, ptr::addr_of_mut!(rect)) != 0 {
+                        let color = if WINDOW_IS_DARK.load(std::sync::atomic::Ordering::Relaxed) {
+                            DARK_BG_COLORREF
+                        } else {
+                            LIGHT_BG_COLORREF
+                        };
+                        let brush = CreateSolidBrush(color);
+                        if brush != 0 {
+                            let _ = FillRect(hdc, ptr::addr_of!(rect), brush);
+                            let _ = DeleteObject(brush);
+                            return 1;
+                        }
+                    }
+                }
+                DefSubclassProc(hwnd, msg, w_param, l_param)
+            }
+            WM_NCCALCSIZE if w_param != 0 && l_param != 0 => {
+                // SAFETY: `l_param` points to a valid `NCCALCSIZE_PARAMS` when `w_param != 0`.
+                let params = &mut *(l_param as *mut NcCalcSizeParams);
+                let dpi = {
+                    let d = GetDpiForWindow(hwnd);
+                    if d == 0 {
+                        96
+                    } else {
+                        d
+                    }
+                };
+                let frame_x = GetSystemMetricsForDpi(SM_CXFRAME, dpi)
+                    + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+                let frame_y = GetSystemMetricsForDpi(SM_CYFRAME, dpi)
+                    + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+
+                if IsZoomed(hwnd) != 0 {
+                    // When maximized, Windows extends the window outward by the invisible resize
+                    // border; inset all 4 sides so browser content is never clipped off-screen.
+                    params.rgrc[0].left += frame_x;
+                    params.rgrc[0].right -= frame_x;
+                    params.rgrc[0].top += frame_y;
+                    params.rgrc[0].bottom -= frame_y;
+                } else {
+                    // Keep the invisible left/right/bottom resize border in the non-client area so
+                    // child WebView2 HWNDs do not cover it, while keeping `top` flush for the tab strip.
+                    params.rgrc[0].left += frame_x;
+                    params.rgrc[0].right -= frame_x;
+                    params.rgrc[0].bottom -= frame_y;
+                }
+                0
+            }
+            WM_NCHITTEST => {
+                let hit = DefSubclassProc(hwnd, msg, w_param, l_param);
+                if hit != HTCLIENT || IsZoomed(hwnd) != 0 {
+                    return hit;
+                }
+                let x = (l_param & 0xFFFF) as i16 as i32;
+                let y = ((l_param >> 16) & 0xFFFF) as i16 as i32;
+                let mut rect = WinRect::default();
+                if GetWindowRect(hwnd, ptr::addr_of_mut!(rect)) != 0 {
+                    let dpi = {
+                        let d = GetDpiForWindow(hwnd);
+                        if d == 0 {
+                            96
+                        } else {
+                            d
+                        }
+                    };
+                    let border = (GetSystemMetricsForDpi(SM_CYFRAME, dpi)
+                        + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi))
+                    .max(6);
+                    if y >= rect.top && y < rect.top + border {
+                        if x < rect.left + border * 2 {
+                            return HTTOPLEFT;
+                        }
+                        if x >= rect.right - border * 2 {
+                            return HTTOPRIGHT;
+                        }
+                        return HTTOP;
+                    }
+                }
+                hit
+            }
+            WM_NCDESTROY => {
+                let _ = RemoveWindowSubclass(hwnd, Some(frame_subclass_proc), u_id_subclass);
+                DefSubclassProc(hwnd, msg, w_param, l_param)
+            }
+            _ => DefSubclassProc(hwnd, msg, w_param, l_param),
+        }
     }
 
     pub fn apply_window_attributes(window: &Window, is_dark: bool) {
+        WINDOW_IS_DARK.store(is_dark, std::sync::atomic::Ordering::Relaxed);
         let hwnd = window.hwnd();
         let dark_flag: i32 = i32::from(is_dark);
         let corner_pref: u32 = DWMWCP_ROUND;
@@ -1031,6 +1324,7 @@ mod platform {
                 ptr::addr_of!(corner_pref).cast::<c_void>(),
                 size_of::<u32>() as u32,
             );
+            let _ = InvalidateRect(hwnd, ptr::null(), 1);
         }
     }
 
@@ -1122,8 +1416,10 @@ mod platform {
     use super::SnapZone;
 
     pub fn configure_window_builder(builder: WindowBuilder) -> WindowBuilder {
-        builder
+        builder.with_decorations(false)
     }
+
+    pub fn install_window_frame(_window: &Window) {}
 
     pub fn apply_window_attributes(_window: &Window, _is_dark: bool) {}
 

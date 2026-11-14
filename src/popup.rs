@@ -1,24 +1,34 @@
-//! Reusable borderless, transparent popup overlay infrastructure (`Menu`, `Omnibox`, etc.).
+//! Reusable borderless popup overlay infrastructure (`Menu`, `Omnibox`, etc.).
 //!
-//! Uses a lazily-created, owner-attached `tao::Window` + `wry::WebView` so dropdowns float
-//! cleanly above sibling WebView2 content HWNDs with crisp DPI scaling and zero airspace clipping.
+//! Uses a lazily-created, opaque, owner-attached `tao::Window` + `wry::WebView` with
+//! Windows 11 DWM rounded corners, themed border/background, and paint-synchronized reveal
+//! so dropdowns float cleanly above sibling WebView2 content HWNDs with zero border artifacts
+//! or open flash.
+
+use std::time::{Duration, Instant};
 
 use tao::{
     dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
     event_loop::{EventLoopProxy, EventLoopWindowTarget},
     window::{Window, WindowBuilder, WindowId},
 };
-use wry::{Rect, WebContext, WebView, WebViewBuilder};
+use wry::{Rect, WebContext, WebView, WebViewBuilder, RGBA};
 
 use crate::{
     app::AppEvent,
     ui::{self, WindowAppearance},
 };
 
-/// Logical padding around the popup card to give its drop shadow room without clipping.
-const SHADOW_PAD: f64 = 12.0;
 const MENU_CARD_WIDTH: f64 = 276.0;
-const MENU_CARD_HEIGHT: f64 = 418.0;
+const MENU_CARD_HEIGHT: f64 = 378.0;
+
+fn popup_bg_rgba(is_dark: bool) -> RGBA {
+    if is_dark {
+        (41, 42, 45, 255) // #292a2d
+    } else {
+        (255, 255, 255, 255) // #ffffff
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PopupKind {
@@ -60,8 +70,241 @@ pub struct AnchorRect {
 #[derive(Debug, Clone)]
 pub struct OpenPopupRequest {
     pub kind: PopupKind,
+    pub anchor_id: String,
+    pub toggle: bool,
     pub anchor: AnchorRect,
     pub data_json: String,
+}
+
+/// Single source of truth for the popup lifecycle.
+fn popup_debug_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("EMBER_POPUP_DEBUG")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
+fn popup_debug_log(msg: &str) {
+    if popup_debug_enabled() {
+        eprintln!("[popup-sm] {msg}");
+    }
+}
+
+/// Pure sequence ordering check for omnibox query responses.
+///
+/// Applies a response only if `query_id >= last_applied_id`, `query_id > cancelled_before_id`,
+/// and `query_id == latest_sent_id`.
+pub fn should_apply_omnibox_response(
+    query_id: u64,
+    latest_sent_id: u64,
+    last_applied_id: u64,
+    cancelled_before_id: u64,
+) -> bool {
+    query_id > 0
+        && query_id == latest_sent_id
+        && query_id >= last_applied_id
+        && query_id > cancelled_before_id
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PopupState {
+    Closed,
+    Opening { kind: PopupKind, anchor_id: String },
+    Open { kind: PopupKind, anchor_id: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseReason {
+    BlurOrOutsideClick,
+    Explicit,
+    SystemEvent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenDecision {
+    StartOpening { generation: u64 },
+    UpdateInPlace { generation: u64 },
+    UpdateWhileOpening { generation: u64 },
+    ClosedInstead { close_gen: u64 },
+    SuppressedToggle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseAction {
+    pub generation: u64,
+    pub was_opening: bool,
+}
+
+/// Pure, window-free state machine governing popup open, toggle-suppression, and close transitions.
+#[derive(Debug)]
+pub struct PopupStateMachine {
+    state: PopupState,
+    generation: u64,
+    last_blur_close: Option<(String, Instant)>,
+}
+
+const TOGGLE_SUPPRESS_WINDOW: Duration = Duration::from_millis(250);
+
+impl Default for PopupStateMachine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PopupStateMachine {
+    pub fn new() -> Self {
+        Self {
+            state: PopupState::Closed,
+            generation: 0,
+            last_blur_close: None,
+        }
+    }
+
+    pub fn state(&self) -> &PopupState {
+        &self.state
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn is_open(&self) -> bool {
+        !matches!(self.state, PopupState::Closed)
+    }
+
+    pub fn current_kind(&self) -> Option<PopupKind> {
+        match &self.state {
+            PopupState::Closed => None,
+            PopupState::Opening { kind, .. } | PopupState::Open { kind, .. } => Some(*kind),
+        }
+    }
+
+    pub fn request_open(
+        &mut self,
+        kind: PopupKind,
+        anchor_id: &str,
+        toggle: bool,
+        now: Instant,
+    ) -> OpenDecision {
+        if toggle {
+            match &self.state {
+                PopupState::Opening {
+                    kind: cur_kind,
+                    anchor_id: cur_anchor,
+                }
+                | PopupState::Open {
+                    kind: cur_kind,
+                    anchor_id: cur_anchor,
+                } if *cur_kind == kind && cur_anchor == anchor_id => {
+                    let close_gen = self
+                        .request_close(CloseReason::Explicit, now)
+                        .map_or(self.generation, |c| c.generation);
+                    return OpenDecision::ClosedInstead { close_gen };
+                }
+                PopupState::Closed => {
+                    if let Some((last_anchor, closed_at)) = &self.last_blur_close {
+                        if last_anchor == anchor_id
+                            && now.saturating_duration_since(*closed_at) <= TOGGLE_SUPPRESS_WINDOW
+                        {
+                            self.last_blur_close = None;
+                            return OpenDecision::SuppressedToggle;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        self.last_blur_close = None;
+
+        if !toggle {
+            match &mut self.state {
+                PopupState::Open {
+                    kind: cur_kind,
+                    anchor_id: cur_anchor,
+                } if *cur_kind == kind => {
+                    *cur_anchor = anchor_id.to_owned();
+                    return OpenDecision::UpdateInPlace {
+                        generation: self.generation,
+                    };
+                }
+                PopupState::Opening {
+                    kind: cur_kind,
+                    anchor_id: cur_anchor,
+                } if *cur_kind == kind => {
+                    *cur_anchor = anchor_id.to_owned();
+                    return OpenDecision::UpdateWhileOpening {
+                        generation: self.generation,
+                    };
+                }
+                _ => {}
+            }
+        }
+
+        self.generation += 1;
+        popup_debug_log(&format!(
+            "transition {:?} -> Opening({:?}, anchor={}) gen={}",
+            self.state, kind, anchor_id, self.generation
+        ));
+        self.state = PopupState::Opening {
+            kind,
+            anchor_id: anchor_id.to_owned(),
+        };
+        OpenDecision::StartOpening {
+            generation: self.generation,
+        }
+    }
+
+    pub fn on_ready_to_show(&mut self, gen: u64) -> Option<PopupKind> {
+        if gen != self.generation {
+            popup_debug_log(&format!(
+                "ignored stale ready_to_show gen={} current={}",
+                gen, self.generation
+            ));
+            return None;
+        }
+        if let PopupState::Opening { kind, anchor_id } = &self.state {
+            let kind = *kind;
+            popup_debug_log(&format!(
+                "transition Opening -> Open({:?}, anchor={}) gen={}",
+                kind, anchor_id, gen
+            ));
+            self.state = PopupState::Open {
+                kind,
+                anchor_id: anchor_id.clone(),
+            };
+            Some(kind)
+        } else {
+            None
+        }
+    }
+
+    pub fn request_close(&mut self, reason: CloseReason, now: Instant) -> Option<CloseAction> {
+        let (was_opening, anchor_id) = match &self.state {
+            PopupState::Closed => return None,
+            PopupState::Opening { anchor_id, .. } => (true, anchor_id.clone()),
+            PopupState::Open { anchor_id, .. } => (false, anchor_id.clone()),
+        };
+
+        if reason == CloseReason::BlurOrOutsideClick {
+            self.last_blur_close = Some((anchor_id, now));
+        } else {
+            self.last_blur_close = None;
+        }
+
+        self.generation += 1;
+        popup_debug_log(&format!(
+            "transition {:?} -> Closed reason={:?} gen={}",
+            self.state, reason, self.generation
+        ));
+        self.state = PopupState::Closed;
+        Some(CloseAction {
+            generation: self.generation,
+            was_opening,
+        })
+    }
 }
 
 pub(crate) struct PopupOpenContext<'a> {
@@ -77,8 +320,9 @@ pub(crate) struct PopupOpenContext<'a> {
 pub struct PopupManager {
     window: Option<Window>,
     webview: Option<WebView>,
-    is_open: bool,
-    current_kind: Option<PopupKind>,
+    sm: PopupStateMachine,
+    is_ready: bool,
+    pending_open_script: Option<String>,
 }
 
 impl Default for PopupManager {
@@ -92,17 +336,18 @@ impl PopupManager {
         Self {
             window: None,
             webview: None,
-            is_open: false,
-            current_kind: None,
+            sm: PopupStateMachine::new(),
+            is_ready: false,
+            pending_open_script: None,
         }
     }
 
     pub fn is_open(&self) -> bool {
-        self.is_open
+        self.sm.is_open()
     }
 
     pub fn current_kind(&self) -> Option<PopupKind> {
-        self.current_kind
+        self.sm.current_kind()
     }
 
     pub fn is_popup_window(&self, id: WindowId) -> bool {
@@ -130,13 +375,9 @@ impl PopupManager {
 
         let mut builder = WindowBuilder::new()
             .with_decorations(false)
-            .with_transparent(true)
             .with_visible(false)
             .with_resizable(false)
-            .with_inner_size(LogicalSize::new(
-                MENU_CARD_WIDTH + SHADOW_PAD * 2.0,
-                MENU_CARD_HEIGHT + SHADOW_PAD * 2.0,
-            ));
+            .with_inner_size(LogicalSize::new(MENU_CARD_WIDTH, MENU_CARD_HEIGHT));
 
         builder = platform::configure_popup_window_builder(builder, main_window);
 
@@ -144,19 +385,17 @@ impl PopupManager {
             .build(event_loop)
             .map_err(|_| wry::Error::InitScriptError)?;
 
+        platform::apply_popup_dwm_attributes(&popup_win, is_dark);
+
         let ipc_proxy = proxy.clone();
         let initial_bounds = Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
-            size: LogicalSize::new(
-                MENU_CARD_WIDTH + SHADOW_PAD * 2.0,
-                MENU_CARD_HEIGHT + SHADOW_PAD * 2.0,
-            )
-            .into(),
+            size: LogicalSize::new(MENU_CARD_WIDTH, MENU_CARD_HEIGHT).into(),
         };
 
         let popup_wv = WebViewBuilder::with_web_context(web_context)
             .with_bounds(initial_bounds)
-            .with_transparent(true)
+            .with_background_color(popup_bg_rgba(is_dark))
             .with_html(POPUP_HTML)
             .with_ipc_handler(move |request| {
                 let _ = ipc_proxy.send_event(AppEvent::PopupIpc(request.body().clone()));
@@ -172,15 +411,42 @@ impl PopupManager {
 
         self.window = Some(popup_win);
         self.webview = Some(popup_wv);
+        self.is_ready = false;
         Ok(())
     }
 
-    /// Opens (or updates) the popup overlay anchored to `req.anchor` in `main_window` coordinates.
+    /// Opens, toggles, or updates the popup overlay anchored to `req.anchor` in `main_window` coordinates.
     pub(crate) fn open(
         &mut self,
         ctx: PopupOpenContext<'_>,
         req: &OpenPopupRequest,
     ) -> Result<(), wry::Error> {
+        if req.kind == PopupKind::Omnibox {
+            let count = extract_json_number(&req.data_json, "count").unwrap_or(0.0);
+            if count <= 0.0 {
+                self.close(true, CloseReason::Explicit, Some(ctx.proxy));
+                return Ok(());
+            }
+        }
+
+        let decision = self
+            .sm
+            .request_open(req.kind, &req.anchor_id, req.toggle, Instant::now());
+        let is_in_place_update = matches!(
+            decision,
+            OpenDecision::UpdateInPlace { .. } | OpenDecision::UpdateWhileOpening { .. }
+        );
+        let gen = match decision {
+            OpenDecision::SuppressedToggle => return Ok(()),
+            OpenDecision::ClosedInstead { close_gen } => {
+                self.begin_close_animation(close_gen, false, Some(ctx.proxy));
+                return Ok(());
+            }
+            OpenDecision::StartOpening { generation }
+            | OpenDecision::UpdateInPlace { generation }
+            | OpenDecision::UpdateWhileOpening { generation } => generation,
+        };
+
         self.ensure_created(
             ctx.event_loop,
             ctx.main_window,
@@ -207,23 +473,18 @@ impl PopupManager {
             }
         };
 
-        let total_w = card_w + SHADOW_PAD * 2.0;
-        let total_h = card_h + SHADOW_PAD * 2.0;
-
         // Position in logical coordinates relative to main window's client origin:
-        // Menu aligns its card's right edge with anchor.right; Omnibox aligns left edge.
+        // Menu aligns its right edge with anchor.right; Omnibox aligns left edge.
         let card_left_logical = match req.kind {
             PopupKind::Menu => req.anchor.right - card_w,
             PopupKind::Omnibox => req.anchor.left,
         };
         let card_top_logical = req.anchor.bottom + 4.0;
 
-        let mut phys_x =
-            main_inner_pos.x + ((card_left_logical - SHADOW_PAD) * scale).round() as i32;
-        let mut phys_y =
-            main_inner_pos.y + ((card_top_logical - SHADOW_PAD) * scale).round() as i32;
-        let phys_w = (total_w * scale).ceil() as u32;
-        let phys_h = (total_h * scale).ceil() as u32;
+        let mut phys_x = main_inner_pos.x + (card_left_logical * scale).round() as i32;
+        let mut phys_y = main_inner_pos.y + (card_top_logical * scale).round() as i32;
+        let phys_w = (card_w * scale).round().max(1.0) as u32;
+        let phys_h = (card_h * scale).round().max(1.0) as u32;
 
         // Clamp to the current monitor's work area so the menu never clips off-screen.
         if let Some(monitor) = main_window.current_monitor() {
@@ -242,42 +503,79 @@ impl PopupManager {
         }
 
         if let (Some(win), Some(wv)) = (&self.window, &self.webview) {
+            let theme_pref = if appearance.is_dark {
+                crate::settings::ThemePreference::Dark
+            } else {
+                crate::settings::ThemePreference::Light
+            };
+            ui::apply_webview_theme(wv, theme_pref);
+            let _ = wv.set_background_color(popup_bg_rgba(appearance.is_dark));
+            platform::apply_popup_dwm_attributes(win, appearance.is_dark);
+            platform::set_popup_no_activate(win, !req.kind.needs_focus());
+
             win.set_outer_position(PhysicalPosition::new(phys_x, phys_y));
             win.set_inner_size(PhysicalSize::new(phys_w, phys_h));
             let _ = wv.set_bounds(Rect {
                 position: LogicalPosition::new(0.0, 0.0).into(),
-                size: LogicalSize::new(total_w, total_h).into(),
+                size: LogicalSize::new(card_w, card_h).into(),
             });
 
-            let script = format!(
-                "if(window.__emberOpenPopup){{window.__emberOpenPopup({kind},{data},{dark},{reduced});}}",
-                kind = serde_json_str(req.kind.as_str()),
-                data = if req.data_json.trim().is_empty() {
-                    "{}"
-                } else {
-                    req.data_json.as_str()
-                },
-                dark = if appearance.is_dark { "true" } else { "false" },
-                reduced = if reduced_motion { "true" } else { "false" },
-            );
-            let _ = wv.evaluate_script(&script);
-
-            if req.kind.needs_focus() {
-                win.set_visible(true);
-                win.set_focus();
+            let data_payload = if req.data_json.trim().is_empty() {
+                "{}"
             } else {
-                platform::show_window_no_activate(win);
+                req.data_json.as_str()
+            };
+            let script = if is_in_place_update && self.is_ready && req.kind == PopupKind::Omnibox {
+                format!(
+                    "if(window.__emberUpdatePopupData){{window.__emberUpdatePopupData({data_payload});}}"
+                )
+            } else {
+                format!(
+                    "if(window.__emberOpenPopup){{window.__emberOpenPopup({kind},{data},{dark},{reduced},{gen});}}",
+                    kind = serde_json_str(req.kind.as_str()),
+                    data = data_payload,
+                    dark = if appearance.is_dark { "true" } else { "false" },
+                    reduced = if reduced_motion { "true" } else { "false" },
+                )
+            };
+
+            if self.is_ready {
+                self.pending_open_script = None;
+                let _ = wv.evaluate_script(&script);
+            } else {
+                self.pending_open_script = Some(script);
             }
-            self.is_open = true;
-            self.current_kind = Some(req.kind);
         }
 
         Ok(())
     }
 
+    /// Called when `POPUP_HTML` finishes initial script setup and can accept `__emberOpenPopup`.
+    pub fn on_init_ready(&mut self) {
+        self.is_ready = true;
+        if let (Some(script), Some(wv)) = (self.pending_open_script.take(), &self.webview) {
+            let _ = wv.evaluate_script(&script);
+        }
+    }
+
+    /// Called after the popup DOM has rendered and painted its first frame, revealing the window.
+    pub fn on_ready_to_show(&mut self, gen: u64) {
+        let Some(kind) = self.sm.on_ready_to_show(gen) else {
+            return;
+        };
+        if let Some(win) = &self.window {
+            if kind.needs_focus() {
+                win.set_visible(true);
+                win.set_focus();
+            } else {
+                platform::show_window_no_activate(win);
+            }
+        }
+    }
+
     /// Updates live popup data (such as zoom percent) while keeping the popup open.
     pub fn update_data(&self, data_json: &str) {
-        if !self.is_open {
+        if !self.is_open() {
             return;
         }
         if let Some(wv) = &self.webview {
@@ -288,31 +586,89 @@ impl PopupManager {
         }
     }
 
-    /// Begins closing the popup. When `animate` is true, plays the 120ms exit animation
-    /// and waits for `"popup_closed"` IPC (with a JS fallback) to hide the OS window.
-    pub fn close(&mut self, animate: bool) {
-        if !self.is_open {
+    /// Begins closing the popup idempotently. When `animate` is true and the popup is visible,
+    /// plays the 120ms exit animation with a 160ms Rust fallback timer so the window always hides.
+    pub(crate) fn close(
+        &mut self,
+        animate: bool,
+        reason: CloseReason,
+        proxy: Option<&EventLoopProxy<AppEvent>>,
+    ) {
+        let Some(action) = self.sm.request_close(reason, Instant::now()) else {
+            return;
+        };
+        self.pending_open_script = None;
+        if animate && !action.was_opening {
+            self.begin_close_animation(action.generation, false, proxy);
+        } else if let Some(win) = &self.window {
+            win.set_visible(false);
+        }
+    }
+
+    fn begin_close_animation(
+        &self,
+        close_gen: u64,
+        _was_opening: bool,
+        proxy: Option<&EventLoopProxy<AppEvent>>,
+    ) {
+        if let Some(wv) = &self.webview {
+            let script = format!(
+                "if(window.__emberClosePopup){{window.__emberClosePopup({close_gen});}}else if(window.ipc){{window.ipc.postMessage('popup_closed:{close_gen}');}}"
+            );
+            let _ = wv.evaluate_script(&script);
+            if let Some(proxy) = proxy {
+                let timeout_proxy = proxy.clone();
+                let _ = std::thread::Builder::new()
+                    .name(String::from("ember-popup-close-timeout"))
+                    .spawn(move || {
+                        std::thread::sleep(Duration::from_millis(160));
+                        let _ = timeout_proxy.send_event(AppEvent::PopupCloseTimeout(close_gen));
+                    });
+            }
             return;
         }
-        self.is_open = false;
-        self.current_kind = None;
-        if animate {
-            if let Some(wv) = &self.webview {
-                let _ = wv.evaluate_script(
-                    "if(window.__emberClosePopup){window.__emberClosePopup();}else if(window.ipc){window.ipc.postMessage('popup_closed');}",
-                );
-                return;
-            }
+        if let Some(win) = &self.window {
+            win.set_visible(false);
         }
-        self.hide_now();
+    }
+
+    /// Completes closing when `"popup_closed:<gen>"` or `PopupCloseTimeout(gen)` arrives.
+    pub fn finish_close(&self, close_gen: u64) {
+        if close_gen == self.sm.generation() && !self.sm.is_open() {
+            if let Some(win) = &self.window {
+                win.set_visible(false);
+            }
+            self.assert_closed_invariant("finish_close");
+        }
     }
 
     /// Immediately hides the popup window without animation.
     pub fn hide_now(&mut self) {
-        self.is_open = false;
-        self.current_kind = None;
+        let _ = self
+            .sm
+            .request_close(CloseReason::SystemEvent, Instant::now());
+        self.pending_open_script = None;
         if let Some(win) = &self.window {
             win.set_visible(false);
+        }
+        self.assert_closed_invariant("hide_now");
+    }
+
+    /// Verifies that no visible orphan popup window remains when the state machine is `Closed`.
+    pub fn assert_closed_invariant(&self, context: &str) {
+        if self.sm.state() == &PopupState::Closed {
+            if let Some(win) = &self.window {
+                if win.is_visible() {
+                    eprintln!(
+                        "[popup-sm] WARNING: orphan visible popup detected at {context}; forcing hidden"
+                    );
+                    win.set_visible(false);
+                    debug_assert!(
+                        !win.is_visible(),
+                        "popup window remained visible after Closed at {context}"
+                    );
+                }
+            }
         }
     }
 }
@@ -339,6 +695,10 @@ fn serde_json_str(s: &str) -> String {
 pub fn parse_open_popup_payload(json_str: &str) -> Option<OpenPopupRequest> {
     let kind_str = extract_json_string(json_str, "kind")?;
     let kind = PopupKind::parse(&kind_str)?;
+    let anchor_id = extract_json_string(json_str, "anchorId")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| kind.as_str().to_owned());
+    let toggle = extract_json_bool(json_str, "toggle").unwrap_or(false);
 
     let anchor_obj = extract_json_object(json_str, "anchor")?;
     let anchor = AnchorRect {
@@ -356,9 +716,22 @@ pub fn parse_open_popup_payload(json_str: &str) -> Option<OpenPopupRequest> {
 
     Some(OpenPopupRequest {
         kind,
+        anchor_id,
+        toggle,
         anchor,
         data_json,
     })
+}
+
+fn extract_json_bool(json: &str, key: &str) -> Option<bool> {
+    let val = find_json_key_value_start(json, key)?;
+    if val.starts_with("true") {
+        Some(true)
+    } else if val.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 fn find_json_key_value_start<'a>(json: &'a str, key: &str) -> Option<&'a str> {
@@ -429,6 +802,10 @@ fn extract_json_object<'a>(json: &'a str, key: &str) -> Option<&'a str> {
 
 #[cfg(target_os = "windows")]
 mod platform {
+    use core::ffi::c_void;
+    use core::mem::size_of;
+    use core::ptr;
+
     use tao::{
         platform::windows::{WindowBuilderExtWindows, WindowExtWindows},
         window::{Window, WindowBuilder},
@@ -438,9 +815,31 @@ mod platform {
     extern "system" {
         fn GetForegroundWindow() -> isize;
         fn ShowWindow(hwnd: isize, cmd_show: i32) -> i32;
+        fn GetWindowLongW(hwnd: isize, n_index: i32) -> i32;
+        fn SetWindowLongW(hwnd: isize, n_index: i32, dw_new_long: i32) -> i32;
+    }
+
+    const GWL_EXSTYLE: i32 = -20;
+    const WS_EX_NOACTIVATE: i32 = 0x0800_0000;
+
+    #[link(name = "dwmapi", kind = "raw-dylib")]
+    extern "system" {
+        fn DwmSetWindowAttribute(
+            hwnd: isize,
+            dw_attribute: u32,
+            pv_attribute: *const c_void,
+            cb_attribute: u32,
+        ) -> i32;
     }
 
     const SW_SHOWNOACTIVATE: i32 = 4;
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWCP_ROUND: u32 = 2;
+    // COLORREF is 0x00BBGGRR: subtle 1px border matching light (#dadce0) and dark (#434447) surfaces.
+    const LIGHT_BORDER_COLORREF: u32 = 0x00E0_DCDA;
+    const DARK_BORDER_COLORREF: u32 = 0x0047_4443;
 
     pub fn configure_popup_window_builder(
         builder: WindowBuilder,
@@ -449,7 +848,57 @@ mod platform {
         builder
             .with_skip_taskbar(true)
             .with_owner_window(main_window.hwnd() as _)
-            .with_no_redirection_bitmap(true)
+            .with_undecorated_shadow(true)
+    }
+
+    pub fn apply_popup_dwm_attributes(win: &Window, is_dark: bool) {
+        let hwnd = win.hwnd();
+        let dark_flag: i32 = i32::from(is_dark);
+        let corner_pref: u32 = DWMWCP_ROUND;
+        let border_color: u32 = if is_dark {
+            DARK_BORDER_COLORREF
+        } else {
+            LIGHT_BORDER_COLORREF
+        };
+
+        // SAFETY: `hwnd` is a valid window handle owned by `win`, and each attribute pointer
+        // matches the exact 4-byte integer size expected by `DwmSetWindowAttribute` on Windows 11.
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                ptr::addr_of!(dark_flag).cast::<c_void>(),
+                size_of::<i32>() as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                ptr::addr_of!(corner_pref).cast::<c_void>(),
+                size_of::<u32>() as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_BORDER_COLOR,
+                ptr::addr_of!(border_color).cast::<c_void>(),
+                size_of::<u32>() as u32,
+            );
+        }
+    }
+
+    pub fn set_popup_no_activate(win: &Window, no_activate: bool) {
+        let hwnd = win.hwnd();
+        // SAFETY: `hwnd` is a valid top-level window handle owned by `win`.
+        unsafe {
+            let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+            let next_style = if no_activate {
+                ex_style | WS_EX_NOACTIVATE
+            } else {
+                ex_style & !WS_EX_NOACTIVATE
+            };
+            if next_style != ex_style {
+                let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, next_style);
+            }
+        }
     }
 
     pub fn show_window_no_activate(win: &Window) {
@@ -487,6 +936,10 @@ mod platform {
     ) -> WindowBuilder {
         builder.with_always_on_top(true)
     }
+
+    pub fn apply_popup_dwm_attributes(_win: &Window, _is_dark: bool) {}
+
+    pub fn set_popup_no_activate(_win: &Window, _no_activate: bool) {}
 
     pub fn show_window_no_activate(win: &Window) {
         win.set_visible(true);
@@ -546,7 +999,7 @@ pub const POPUP_HTML: &str = r##"<!DOCTYPE html>
   html, body {
     width: 100%;
     height: 100%;
-    background: transparent;
+    background: var(--menu-bg);
     overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 13px;
@@ -554,20 +1007,19 @@ pub const POPUP_HTML: &str = r##"<!DOCTYPE html>
   }
 
   .popup-stage {
-    padding: 12px;
+    padding: 0;
     width: 100%;
     height: 100%;
+    background: var(--menu-bg);
   }
 
   .popup-card {
+    width: 100%;
+    height: 100%;
     background: var(--menu-bg);
-    border: 1px solid var(--menu-border);
-    border-radius: 8px;
-    box-shadow: var(--menu-shadow);
     padding: 6px 0;
-    opacity: 0;
-    transform: translateY(-6px) scale(0.98);
-    transform-origin: top right;
+    opacity: 1;
+    transform: translateY(-4px);
     transition:
       opacity var(--popup-anim-duration) var(--popup-anim-ease),
       transform var(--popup-anim-duration) var(--popup-anim-ease);
@@ -575,7 +1027,7 @@ pub const POPUP_HTML: &str = r##"<!DOCTYPE html>
 
   .popup-card.open {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
 
   .menu-item {
@@ -717,6 +1169,11 @@ pub const POPUP_HTML: &str = r##"<!DOCTYPE html>
   .omnibox-item:hover,
   .omnibox-item.focused {
     background: var(--btn-hover);
+  }
+
+  .omnibox-item.default-match {
+    background: rgba(128, 128, 128, 0.12);
+    box-shadow: inset 2px 0 0 var(--accent-color, #4c8bf5);
   }
 
   .omnibox-item:active {
@@ -896,8 +1353,11 @@ pub const POPUP_HTML: &str = r##"<!DOCTYPE html>
         card.innerHTML = "";
         items.forEach(function (item, idx) {
           const btn = document.createElement("button");
-          btn.className = "omnibox-item" + (idx === selected ? " focused" : "");
+          btn.className = "omnibox-item"
+            + (item.isDefault ? " default-match" : "")
+            + (idx === selected ? " focused" : "");
           btn.setAttribute("role", "option");
+          btn.setAttribute("aria-selected", (idx === selected || Boolean(item.isDefault)) ? "true" : "false");
 
           const icon = document.createElement("span");
           icon.className = "omnibox-icon";
@@ -932,7 +1392,7 @@ pub const POPUP_HTML: &str = r##"<!DOCTYPE html>
         });
       }
 
-      window.__emberOpenPopup = function (kind, data, isDark, reducedMotion) {
+      window.__emberOpenPopup = function (kind, data, isDark, reducedMotion, gen) {
         if (closeTimer) {
           clearTimeout(closeTimer);
           closeTimer = null;
@@ -957,6 +1417,7 @@ pub const POPUP_HTML: &str = r##"<!DOCTYPE html>
         requestAnimationFrame(function () {
           requestAnimationFrame(function () {
             card.classList.add("open");
+            postIpc("popup_ready:" + (gen || 0));
           });
         });
       };
@@ -977,7 +1438,7 @@ pub const POPUP_HTML: &str = r##"<!DOCTYPE html>
         }
       };
 
-      window.__emberClosePopup = function () {
+      window.__emberClosePopup = function (gen) {
         card.classList.remove("open");
         const reduced = document.documentElement.getAttribute("data-reduced-motion") === "true"
           || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -985,11 +1446,260 @@ pub const POPUP_HTML: &str = r##"<!DOCTYPE html>
         if (closeTimer) clearTimeout(closeTimer);
         closeTimer = setTimeout(function () {
           closeTimer = null;
-          postIpc("popup_closed");
+          postIpc("popup_closed:" + (gen || 0));
         }, delay);
       };
+
+      postIpc("popup_init_ready");
     })();
   </script>
 </body>
 </html>
 "##;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_popup_state_machine_open_ready_close_idempotent() {
+        let mut sm = PopupStateMachine::new();
+        let t0 = Instant::now();
+        assert_eq!(sm.state(), &PopupState::Closed);
+        assert!(!sm.is_open());
+
+        let OpenDecision::StartOpening { generation: g1 } =
+            sm.request_open(PopupKind::Menu, "menu-btn", true, t0)
+        else {
+            panic!("expected StartOpening");
+        };
+        assert_eq!(
+            sm.state(),
+            &PopupState::Opening {
+                kind: PopupKind::Menu,
+                anchor_id: String::from("menu-btn"),
+            }
+        );
+
+        // Stale generation is ignored.
+        assert_eq!(sm.on_ready_to_show(g1 + 10), None);
+        assert_eq!(sm.on_ready_to_show(g1), Some(PopupKind::Menu));
+        assert_eq!(
+            sm.state(),
+            &PopupState::Open {
+                kind: PopupKind::Menu,
+                anchor_id: String::from("menu-btn"),
+            }
+        );
+
+        // Closing is idempotent.
+        assert!(sm
+            .request_close(CloseReason::Explicit, t0 + Duration::from_millis(20))
+            .is_some());
+        assert_eq!(sm.state(), &PopupState::Closed);
+        assert!(sm
+            .request_close(CloseReason::Explicit, t0 + Duration::from_millis(30))
+            .is_none());
+    }
+
+    #[test]
+    fn test_popup_state_machine_toggle_suppression_after_blur_race() {
+        let mut sm = PopupStateMachine::new();
+        let t0 = Instant::now();
+
+        let OpenDecision::StartOpening { generation: g1 } =
+            sm.request_open(PopupKind::Menu, "menu-btn", true, t0)
+        else {
+            panic!("expected StartOpening");
+        };
+        assert_eq!(sm.on_ready_to_show(g1), Some(PopupKind::Menu));
+
+        // Clicking menu-btn causes window blur -> closes popup.
+        let t_blur = t0 + Duration::from_millis(100);
+        assert!(sm
+            .request_close(CloseReason::BlurOrOutsideClick, t_blur)
+            .is_some());
+        assert_eq!(sm.state(), &PopupState::Closed);
+
+        // 50ms later, menu-btn's click handler fires -> suppressed!
+        let t_click = t_blur + Duration::from_millis(50);
+        assert_eq!(
+            sm.request_open(PopupKind::Menu, "menu-btn", true, t_click),
+            OpenDecision::SuppressedToggle
+        );
+        assert_eq!(sm.state(), &PopupState::Closed);
+
+        // Clicking again after the suppression window opens normally.
+        let t_next = t_click + Duration::from_millis(300);
+        assert!(matches!(
+            sm.request_open(PopupKind::Menu, "menu-btn", true, t_next),
+            OpenDecision::StartOpening { .. }
+        ));
+    }
+
+    #[test]
+    fn test_popup_state_machine_toggle_while_open_and_kind_switch() {
+        let mut sm = PopupStateMachine::new();
+        let t0 = Instant::now();
+
+        let OpenDecision::StartOpening { generation: g1 } =
+            sm.request_open(PopupKind::Omnibox, "omnibox", false, t0)
+        else {
+            panic!("expected StartOpening");
+        };
+        assert_eq!(sm.on_ready_to_show(g1), Some(PopupKind::Omnibox));
+
+        // Typing updates in place without bumping generation.
+        assert_eq!(
+            sm.request_open(
+                PopupKind::Omnibox,
+                "omnibox",
+                false,
+                t0 + Duration::from_millis(50)
+            ),
+            OpenDecision::UpdateInPlace { generation: g1 }
+        );
+
+        // Opening Menu while Omnibox is open transitions cleanly to Opening(Menu).
+        let OpenDecision::StartOpening { generation: g2 } = sm.request_open(
+            PopupKind::Menu,
+            "menu-btn",
+            true,
+            t0 + Duration::from_millis(80),
+        ) else {
+            panic!("expected StartOpening for Menu");
+        };
+        assert!(g2 > g1);
+        assert_eq!(sm.on_ready_to_show(g2), Some(PopupKind::Menu));
+
+        // Toggling same anchor while Open closes it instead of reopening.
+        assert!(matches!(
+            sm.request_open(
+                PopupKind::Menu,
+                "menu-btn",
+                true,
+                t0 + Duration::from_millis(120)
+            ),
+            OpenDecision::ClosedInstead { .. }
+        ));
+        assert_eq!(sm.state(), &PopupState::Closed);
+    }
+
+    #[test]
+    fn test_popup_regression_20_cycles_all_close_reasons() {
+        let mut sm = PopupStateMachine::new();
+        let mut t = Instant::now();
+        let reasons = [
+            CloseReason::BlurOrOutsideClick,
+            CloseReason::Explicit,
+            CloseReason::SystemEvent,
+        ];
+
+        for i in 0..20usize {
+            let kind = if i % 2 == 0 {
+                PopupKind::Menu
+            } else {
+                PopupKind::Omnibox
+            };
+            let anchor = if kind == PopupKind::Menu {
+                "menu-btn"
+            } else {
+                "omnibox"
+            };
+            let toggle = kind == PopupKind::Menu;
+            t += Duration::from_millis(300);
+
+            let OpenDecision::StartOpening { generation } =
+                sm.request_open(kind, anchor, toggle, t)
+            else {
+                panic!("cycle {i}: expected StartOpening");
+            };
+            assert_eq!(sm.on_ready_to_show(generation), Some(kind));
+            assert!(sm.is_open());
+
+            if i % 5 == 4 && toggle {
+                assert!(matches!(
+                    sm.request_open(kind, anchor, true, t + Duration::from_millis(50)),
+                    OpenDecision::ClosedInstead { .. }
+                ));
+            } else {
+                let reason = reasons[i % reasons.len()];
+                assert!(sm
+                    .request_close(reason, t + Duration::from_millis(50))
+                    .is_some());
+            }
+            assert_eq!(sm.state(), &PopupState::Closed);
+            assert!(!sm.is_open());
+        }
+    }
+
+    #[test]
+    fn test_omnibox_sequence_ordering_out_of_order_duplicate_and_cancelled() {
+        // Normal increasing sequence
+        assert!(should_apply_omnibox_response(1, 1, 0, 0));
+        assert!(should_apply_omnibox_response(2, 2, 1, 0));
+
+        // Duplicate response for same query_id is allowed if it matches latest_sent_id
+        // (e.g. local cache followed by async online suggestions for the same keystroke)
+        assert!(should_apply_omnibox_response(2, 2, 2, 0));
+
+        // Out-of-order stale response (query_id < latest_sent_id or < last_applied_id) is rejected
+        assert!(!should_apply_omnibox_response(1, 3, 2, 0));
+        assert!(!should_apply_omnibox_response(2, 3, 2, 0));
+
+        // Cancelled response (e.g. Esc/blur/Enter closed popup at seq 3) is rejected
+        assert!(!should_apply_omnibox_response(3, 3, 2, 3));
+        // Only a newer user keystroke (seq 4) can reopen
+        assert!(should_apply_omnibox_response(4, 4, 2, 3));
+    }
+
+    #[test]
+    fn test_popup_30_cycles_type_delete_retype_click_away_enter_esc() {
+        let mut sm = PopupStateMachine::new();
+        let mut t = Instant::now();
+
+        for i in 0..30usize {
+            t += Duration::from_millis(260);
+            // Type -> Opening -> UpdateWhileOpening -> Open -> UpdateInPlace (delete/retype)
+            let OpenDecision::StartOpening { generation: g } =
+                sm.request_open(PopupKind::Omnibox, "omnibox", false, t)
+            else {
+                panic!("cycle {i}: expected StartOpening");
+            };
+            assert!(matches!(
+                sm.request_open(
+                    PopupKind::Omnibox,
+                    "omnibox",
+                    false,
+                    t + Duration::from_millis(10)
+                ),
+                OpenDecision::UpdateWhileOpening { .. }
+            ));
+            assert_eq!(sm.on_ready_to_show(g), Some(PopupKind::Omnibox));
+            assert!(matches!(
+                sm.request_open(
+                    PopupKind::Omnibox,
+                    "omnibox",
+                    false,
+                    t + Duration::from_millis(60)
+                ),
+                OpenDecision::UpdateInPlace { .. }
+            ));
+
+            // Alternate close triggers: click away (BlurOrOutsideClick), suggestion click / Enter / Esc (Explicit), SystemEvent
+            let reason = match i % 3 {
+                0 => CloseReason::BlurOrOutsideClick,
+                1 => CloseReason::Explicit,
+                _ => CloseReason::SystemEvent,
+            };
+            assert!(sm
+                .request_close(reason, t + Duration::from_millis(120))
+                .is_some());
+            // Idempotent second close does nothing
+            assert!(sm
+                .request_close(reason, t + Duration::from_millis(125))
+                .is_none());
+            assert_eq!(sm.state(), &PopupState::Closed);
+        }
+    }
+}

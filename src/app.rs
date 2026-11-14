@@ -148,9 +148,14 @@ pub(crate) enum AppEvent {
     HttpsBlocked { tab_id: usize, url: String },
     /// A background task changed state that `ember://settings` displays (e.g. filter update done).
     RefreshSettingsPage,
-    /// Ranked omnibox suggestions computed on the background DB worker thread.
+    /// Fallback timer (~300ms) to reveal a newly created tab WebView if first paint hasn't arrived yet.
+    TabRevealTimeout { tab_id: usize },
+    /// Fallback timer (~160ms) to guarantee a closing popup OS window is hidden.
+    PopupCloseTimeout(u64),
+    /// Ranked omnibox suggestions and optional inline autofill computed from the in-memory cache.
     OmniboxSuggestions {
         query_id: u64,
+        autofill: Option<crate::storage::AutofillMatch>,
         suggestions: Vec<crate::storage::OmniboxSuggestion>,
     },
 }
@@ -210,7 +215,11 @@ fn ensure_active_tab_webview(
 
     let mut builder = WebViewBuilder::with_web_context(env.web_context)
         .with_bounds(env.content_bounds)
-        .with_visible(true)
+        .with_visible(false)
+        .with_background_color(ui::theme_background_rgba(
+            current_settings.theme,
+            env.window,
+        ))
         .with_clipboard(true)
         .with_devtools(cfg!(debug_assertions))
         .with_initialization_script(ui::PAGE_INIT_SCRIPT)
@@ -291,6 +300,13 @@ fn ensure_active_tab_webview(
     load_target_into_webview(&webview, &url, &page_ctx);
 
     tabs.attach_webview(tab_id, webview);
+    let reveal_proxy = env.proxy.clone();
+    let _ = thread::Builder::new()
+        .name(String::from("ember-tab-reveal"))
+        .spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            let _ = reveal_proxy.send_event(AppEvent::TabRevealTimeout { tab_id });
+        });
     if pages::is_internal_url(&url) {
         if let Some((title, _)) = pages::render_internal_page(&url, &page_ctx) {
             tabs.update_title(tab_id, title);
@@ -466,7 +482,12 @@ fn sync_chrome_ui(
             (0, 0, String::new())
         };
 
+    static TAB_REVISION_COUNTER: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(1);
+    let tab_revision = TAB_REVISION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
     let sync_state = ChromeSyncState {
+        tab_revision,
         active_tab_id: tabs.active_tab_id(),
         adblock_enabled: adblocker.is_enabled(),
         active_site_allowlisted,
@@ -529,6 +550,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .with_inner_size(LogicalSize::new(ui_config.width, ui_config.height))
         .with_min_inner_size(LogicalSize::new(480.0, 320.0));
     let window = ui::configure_window_builder(builder).build(&event_loop)?;
+    ui::install_window_frame(&window);
     ui::apply_theme_preference(&window, init_settings.theme);
 
     let (initial_chrome_bounds, mut current_content_bounds) =
@@ -539,6 +561,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let ipc_proxy = proxy.clone();
     let chrome_webview = WebViewBuilder::with_web_context(&mut web_context)
         .with_bounds(initial_chrome_bounds)
+        .with_background_color(ui::chrome_background_rgba(init_settings.theme, &window))
         .with_html(ui::CHROME_HTML)
         .with_ipc_handler(move |request| {
             let _ = ipc_proxy.send_event(AppEvent::UiIpc(request.body().clone()));
@@ -750,7 +773,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     && (popup_manager.is_popup_window(window_id)
                         || !popup_manager.is_foreground_ours(&window))
                 {
-                    popup_manager.close(true);
+                    popup_manager.close(
+                        true,
+                        crate::popup::CloseReason::BlurOrOutsideClick,
+                        Some(&proxy),
+                    );
                     let _ = chrome_webview.evaluate_script(
                         "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
                     );
@@ -819,6 +846,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 ..
             } => {
                 ui::apply_window_chrome_style(&window);
+                let theme_pref = settings.get().theme;
+                let _ = chrome_webview
+                    .set_background_color(ui::chrome_background_rgba(theme_pref, &window));
+                let content_bg = ui::theme_background_rgba(theme_pref, &window);
+                tabs.for_each_webview(|wv| {
+                    let _ = wv.set_background_color(content_bg);
+                });
                 sync_chrome_ui(
                     &chrome_webview,
                     &window,
@@ -965,29 +999,72 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             UiCommand::ClosePopup => {
-                                popup_manager.close(true);
+                                storage.cancel_pending_queries();
+                                popup_manager.close(
+                                    true,
+                                    crate::popup::CloseReason::Explicit,
+                                    Some(&proxy),
+                                );
+                                popup_manager.assert_closed_invariant("close_popup");
                                 let _ = chrome_webview.evaluate_script(
                                     "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
                                 );
                             }
-                            UiCommand::OmniboxSuggest { query_id, query } => {
-                                let s = settings.get();
-                                let suggest_proxy = proxy.clone();
-                                storage.suggest_async(
+                            UiCommand::OmniboxSuggest {
+                                query_id,
+                                allow_autofill,
+                                query,
+                            } => {
+                                let (autofill, suggestions) =
+                                    storage.query_omnibox_cached(&query, allow_autofill, 8);
+                                let _ = proxy.send_event(AppEvent::OmniboxSuggestions {
                                     query_id,
-                                    query,
-                                    8,
-                                    s.search_suggestions_enabled,
-                                    s.search_engine,
-                                    move |qid, suggestions| {
-                                        let _ = suggest_proxy.send_event(
-                                            AppEvent::OmniboxSuggestions {
-                                                query_id: qid,
-                                                suggestions,
-                                            },
-                                        );
-                                    },
-                                );
+                                    autofill: autofill.clone(),
+                                    suggestions: suggestions.clone(),
+                                });
+
+                                let s = settings.get();
+                                if s.search_suggestions_enabled && suggestions.len() < 8 {
+                                    let suggest_proxy = proxy.clone();
+                                    storage.suggest_async(
+                                        query_id,
+                                        query,
+                                        8,
+                                        true,
+                                        s.search_engine,
+                                        move |qid, mut online_suggestions| {
+                                            if let Some(ref af) = autofill {
+                                                if let Some(pos) = online_suggestions
+                                                    .iter()
+                                                    .position(|item| item.url == af.full_url)
+                                                {
+                                                    let mut item = online_suggestions.remove(pos);
+                                                    item.is_default = true;
+                                                    online_suggestions.insert(0, item);
+                                                } else {
+                                                    online_suggestions.insert(
+                                                        0,
+                                                        crate::storage::OmniboxSuggestion {
+                                                            kind: af.kind,
+                                                            title: af.title.clone(),
+                                                            url: af.full_url.clone(),
+                                                            score: af.score + 2000.0,
+                                                            is_default: true,
+                                                        },
+                                                    );
+                                                    online_suggestions.truncate(8);
+                                                }
+                                            }
+                                            let _ = suggest_proxy.send_event(
+                                                AppEvent::OmniboxSuggestions {
+                                                    query_id: qid,
+                                                    autofill,
+                                                    suggestions: online_suggestions,
+                                                },
+                                            );
+                                        },
+                                    );
+                                }
                             }
                             UiCommand::OmniboxSelect(idx) => {
                                 popup_manager.update_data(&format!("{{\"selectedIndex\":{idx}}}"));
@@ -1214,6 +1291,26 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             UiCommand::Navigate(raw_input) => {
+                                storage.cancel_pending_queries();
+                                if popup_manager.is_open() {
+                                    popup_manager.hide_now();
+                                    let _ = chrome_webview.evaluate_script(
+                                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                                    );
+                                }
+                                let trimmed = raw_input.trim();
+                                let is_direct_url = !trimmed.contains(' ')
+                                    && (trimmed.contains('.')
+                                        || trimmed.starts_with("http://")
+                                        || trimmed.starts_with("https://")
+                                        || trimmed.starts_with("localhost"));
+                                if is_direct_url {
+                                    let normalized = crate::ui::normalize_omnibox_input(
+                                        trimmed,
+                                        settings.get().search_engine,
+                                    );
+                                    storage.mark_url_typed_async(&normalized);
+                                }
                                 let mut env = WebViewEnv {
                                     window: &window,
                                     web_context: &mut web_context,
@@ -1450,6 +1547,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             UiCommand::WindowDrag => {
                                 let _ = window.drag_window();
                             }
+                            UiCommand::WindowResize(dir) => {
+                                let _ = window.drag_resize_window(dir);
+                            }
                             UiCommand::WindowMinimize => {
                                 window.set_minimized(true);
                             }
@@ -1487,7 +1587,30 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 }
                 AppEvent::PageIpc { tab_id, payload } => {
                     if let Some(page_event) = ui::parse_page_ipc_event(&payload) {
+                        if popup_manager.is_open()
+                            && matches!(
+                                page_event,
+                                PageIpcEvent::ShortcutNewTab
+                                    | PageIpcEvent::ShortcutCloseTab
+                                    | PageIpcEvent::ShortcutReopenClosedTab
+                                    | PageIpcEvent::ShortcutNextTab
+                                    | PageIpcEvent::ShortcutPrevTab
+                                    | PageIpcEvent::ShortcutSwitchTabIndex(_)
+                                    | PageIpcEvent::ShortcutReload
+                                    | PageIpcEvent::ShortcutBack
+                                    | PageIpcEvent::ShortcutForward
+                                    | PageIpcEvent::ShortcutFocusOmnibox
+                            )
+                        {
+                            popup_manager.hide_now();
+                            let _ = chrome_webview.evaluate_script(
+                                "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                            );
+                        }
                         match page_event {
+                            PageIpcEvent::FirstPaint => {
+                                tabs.reveal_tab(tab_id);
+                            }
                             PageIpcEvent::Favicon(fav_url) => {
                                 if tabs.update_favicon(tab_id, Some(fav_url)) {
                                     sync_chrome_ui(
@@ -1920,7 +2043,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             }
                             PageIpcEvent::PointerDown => {
                                 if popup_manager.is_open() {
-                                    popup_manager.close(true);
+                                    popup_manager.close(
+                                        true,
+                                        crate::popup::CloseReason::BlurOrOutsideClick,
+                                        Some(&proxy),
+                                    );
                                     let _ = chrome_webview.evaluate_script(
                                         "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
                                     );
@@ -2017,7 +2144,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 if let Some(theme) = theme_to_apply {
                                     ui::apply_theme_preference(&window, theme);
                                     ui::apply_webview_theme(&chrome_webview, theme);
-                                    tabs.for_each_webview(|wv| ui::apply_webview_theme(wv, theme));
+                                    let _ = chrome_webview.set_background_color(
+                                        ui::chrome_background_rgba(theme, &window),
+                                    );
+                                    let content_bg = ui::theme_background_rgba(theme, &window);
+                                    tabs.for_each_webview(|wv| {
+                                        ui::apply_webview_theme(wv, theme);
+                                        let _ = wv.set_background_color(content_bg);
+                                    });
                                 }
                                 if let Some(suspend) = suspend_to_apply {
                                     tabs.set_suspend_timeout(suspend);
@@ -2208,8 +2342,15 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     url,
                     is_loading,
                 } => {
+                    if is_loading && tab_id == tabs.active_tab_id() && popup_manager.is_open() {
+                        popup_manager.hide_now();
+                        let _ = chrome_webview.evaluate_script(
+                            "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                        );
+                    }
                     let changed = tabs.update_page_load(tab_id, url, is_loading);
                     if !is_loading {
+                        tabs.reveal_tab(tab_id);
                         if let Some(tab) = tabs.get_tab(tab_id) {
                             storage.record_visit_async(&tab.url, &tab.title);
                             let factor = resolve_zoom_for_url(&storage, &tab.url);
@@ -2342,8 +2483,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         );
                     }
                 }
+                AppEvent::TabRevealTimeout { tab_id } => {
+                    tabs.reveal_tab(tab_id);
+                }
                 AppEvent::OmniboxSuggestions {
                     query_id,
+                    autofill,
                     suggestions,
                 } => {
                     let mut items_json = String::from("[");
@@ -2357,20 +2502,56 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         push_js_quoted(&mut items_json, &item.title);
                         items_json.push_str(",\"url\":");
                         push_js_quoted(&mut items_json, &item.url);
+                        items_json.push_str(",\"isDefault\":");
+                        items_json.push_str(if item.is_default { "true" } else { "false" });
                         items_json.push('}');
                     }
                     items_json.push(']');
+
+                    let autofill_json = match autofill {
+                        Some(ref af) => {
+                            let mut s = String::from("{\"completedText\":");
+                            push_js_quoted(&mut s, &af.completed_text);
+                            s.push_str(",\"fullUrl\":");
+                            push_js_quoted(&mut s, &af.full_url);
+                            s.push_str(",\"title\":");
+                            push_js_quoted(&mut s, &af.title);
+                            s.push_str(",\"kind\":");
+                            push_js_quoted(&mut s, af.kind.as_str());
+                            s.push('}');
+                            s
+                        }
+                        None => String::from("null"),
+                    };
+
                     let script = format!(
-                        "if(window.__emberShowOmniboxSuggestions){{window.__emberShowOmniboxSuggestions({query_id},{items_json});}}"
+                        "if(window.__emberShowOmniboxSuggestions){{window.__emberShowOmniboxSuggestions({query_id},{items_json},{autofill_json});}}"
                     );
                     let _ = chrome_webview.evaluate_script(&script);
                 }
+                AppEvent::PopupCloseTimeout(close_gen) => {
+                    popup_manager.finish_close(close_gen);
+                }
                 AppEvent::PopupIpc(payload) => {
                     let trimmed = payload.trim();
-                    if trimmed == "popup_closed" {
+                    if trimmed == "popup_init_ready" {
+                        popup_manager.on_init_ready();
+                    } else if let Some(gen_str) = trimmed.strip_prefix("popup_ready:") {
+                        let gen = gen_str.trim().parse::<u64>().unwrap_or(0);
+                        popup_manager.on_ready_to_show(gen);
+                    } else if let Some(gen_str) = trimmed.strip_prefix("popup_closed:") {
+                        let gen = gen_str.trim().parse::<u64>().unwrap_or(0);
+                        popup_manager.finish_close(gen);
+                    } else if trimmed == "popup_ready" {
+                        popup_manager.on_ready_to_show(0);
+                    } else if trimmed == "popup_closed" {
                         popup_manager.hide_now();
                     } else if trimmed == "popup_close_request" {
-                        popup_manager.close(true);
+                        popup_manager.close(
+                            true,
+                            crate::popup::CloseReason::Explicit,
+                            Some(&proxy),
+                        );
                         let _ = chrome_webview.evaluate_script(
                             "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
                         );
