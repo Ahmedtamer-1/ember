@@ -10,11 +10,12 @@
 </p>
 
 <p align="center">
-  <a href="#benchmarks"><img src="https://img.shields.io/badge/binary_size-2.7_MB-brightgreen" alt="Binary Size: 2.7 MB" /></a>
-  <a href="#benchmarks"><img src="https://img.shields.io/badge/RAM_usage-388_MB_(lazy)-blue" alt="Base RAM: 388 MB" /></a>
-  <a href="#adblocker"><img src="https://img.shields.io/badge/adblock-built--in_adblock--rust-orange" alt="Built-in Adblocker" /></a>
-  <a href="#architecture"><img src="https://img.shields.io/badge/stack-tao_%2B_wry_%2B_sqlite-informational" alt="Stack: tao + wry + sqlite" /></a>
-  <a href="https://github.com/fouad-awad/ember/actions"><img src="https://img.shields.io/badge/CI-passing-success" alt="CI Status" /></a>
+  <a href="#performance--size-benchmarks"><img src="https://img.shields.io/badge/binary_size-2.72_MB-brightgreen" alt="Binary Size: 2.72 MB" /></a>
+  <a href="#performance--size-benchmarks"><img src="https://img.shields.io/badge/RAM_usage-388_MB_(lazy)-blue" alt="Base RAM: 388 MB" /></a>
+  <a href="#high-performance-built-in-adblocker"><img src="https://img.shields.io/badge/adblock-built--in_adblock--rust-orange" alt="Built-in Adblocker" /></a>
+  <a href="#architecture-overview"><img src="https://img.shields.io/badge/stack-tao_%2B_wry_%2B_sqlite-informational" alt="Stack: tao + wry + sqlite" /></a>
+  <a href="https://github.com/fouad-awad/ember/actions/workflows/ci.yml"><img src="https://github.com/fouad-awad/ember/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License: MIT OR Apache-2.0" /></a>
 </p>
 
 ---
@@ -41,7 +42,8 @@
    - [macOS](#macos)
    - [Linux](#linux)
 10. [Project Structure](#project-structure)
-11. [License](#license)
+11. [Contributing](#contributing)
+12. [License](#license)
 
 ---
 
@@ -95,9 +97,10 @@ flowchart TD
         Tao[tao Window & Event Loop]
         AppCore[Ember App Coordinator / app.rs]
         TabMgr[TabManager / tabs.rs]
-        Storage[SQLite Storage Engine / storage.rs]
+        PopupMgr[Popup & Overlay Manager / popup.rs]
+        Storage[SQLite Storage Engine / storage/mod.rs]
         Settings[TOML Settings Store / settings.rs]
-        AdblockEngine[Adblock Engine / adblock.rs]
+        AdblockEngine[Adblock Engine / adblock/mod.rs]
     end
 
     subgraph UIWebview["Chrome UI Webview (wry)"]
@@ -122,6 +125,7 @@ flowchart TD
     Tao --> AppCore
     AppCore <-->|Dual-way IPC| ChromeHTML
     AppCore --> TabMgr
+    AppCore --> PopupMgr
     TabMgr -->|Create / Suspend / Switch| ContentTabs
     AppCore --> Storage
     AppCore --> Settings
@@ -197,7 +201,7 @@ All animation constants are centralized in `src/ui/layout.rs` and exposed as CSS
 
 ## Performance & Size Benchmarks
 
-Measured on Windows 11 (AMD Ryzen 9, 32 GB RAM, NVMe SSD). For detailed audit methodology and memory profiling graphs, see [BENCHMARKS.md](file:///d:/apps%20i%20make/Light-weight%20browser/BENCHMARKS.md).
+Measured on Windows 11 (AMD Ryzen 9, 32 GB RAM, NVMe SSD). For detailed audit methodology and memory profiling graphs, see [BENCHMARKS.md](BENCHMARKS.md).
 
 ### Memory Consumption vs Chrome & Brave
 
@@ -361,7 +365,7 @@ This runs inside an isolated temporary profile directory and verifies with `PASS
 
 ## Packaging & Installation
 
-Ember includes automated packaging scripts for all major desktop platforms under the [`scripts/`](file:///d:/apps%20i%20make/Light-weight%20browser/scripts) directory.
+Ember includes automated packaging scripts for all major desktop platforms under the [`scripts/`](scripts/) directory.
 
 ### Windows 11 / 10
 
@@ -422,24 +426,33 @@ It automatically detects your OS (`Darwin` or `Linux`) and executes the proper p
 ```text
 ember/
 ├── .github/
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.md
+│   │   └── feature_request.md
+│   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
 │       └── ci.yml               # Multiplatform CI matrix (fmt, clippy, test, release package)
 ├── assets/
+│   ├── screenshots/             # UI and Task Manager benchmark screenshots
 │   └── ember.svg                # Ember browser vector icon
 ├── scripts/
+│   ├── audit_bench.ps1          # Windows benchmark runner wrapper
 │   ├── audit_bench.py           # Automated RAM, startup, and memory profiling benchmark harness
+│   ├── benchmark_tabs.py        # Multi-tab memory comparison script
 │   ├── package_windows.ps1      # Windows portable zip and installer generator
 │   ├── package_macos.sh         # macOS .app bundle and DMG packager
 │   ├── package_linux.sh         # Linux desktop package and tarball generator
 │   ├── package.sh               # Cross-platform packaging dispatcher
 │   └── Info.plist               # macOS bundle configuration
 ├── src/
-│   ├── adblock/                 # adblock-rust engine, network matching, cosmetic script injection
-│   │   └── mod.rs
+│   ├── adblock/                 # adblock-rust engine, network matching, cosmetic & scriptlet injection
+│   │   ├── mod.rs
+│   │   └── resources.rs         # Embedded adblock scriptlets and fallback rules
 │   ├── storage/                 # SQLite history, bookmarks, site zoom factors (rusqlite)
 │   │   └── mod.rs
 │   ├── ui/                      # Chrome UI HTML/CSS/JS frontend and window styling
 │   │   ├── chrome.html          # Toolbar, tab strip, omnibox, and modals
+│   │   ├── layout.rs            # Tab strip geometry, animations, and timing tokens
 │   │   └── mod.rs               # Window chrome bindings, Mica/Acrylic, IPC dispatch
 │   ├── app.rs                   # Central browser application event loop & coordinator
 │   ├── context_menu.rs          # Right-click context menus
@@ -449,6 +462,7 @@ ember/
 │   ├── main.rs                  # Application entry point
 │   ├── pages.rs                 # Internal ember:// pages router and HTML templates
 │   ├── permissions.rs           # Camera, microphone, and geolocation prompts
+│   ├── popup.rs                 # Native overlay popup controller (omnibox & menu)
 │   ├── privacy.rs               # Third-party cookie & DNT/GPC privacy enforcement
 │   ├── settings.rs              # TOML settings store & preference types
 │   ├── tabs.rs                  # TabManager, tab state, suspension, recently closed stack
@@ -457,15 +471,24 @@ ember/
 │   ├── adblock_matching.rs      # Integration tests for adblock filtering and allowlists
 │   ├── omnibox_parsing.rs       # Integration tests for URL normalization and search queries
 │   └── tab_lifecycle.rs         # Integration tests for tab creation, suspension, and LIFO reopening
-├── Cargo.toml                   # Lean dependency tree & release optimization profile
 ├── AGENTS.md                    # Project rules, architecture constraints, and quality standards
 ├── BENCHMARKS.md                # Full performance audit report vs Chrome & Brave
+├── Cargo.toml                   # Lean dependency tree & release optimization profile
+├── CONTRIBUTING.md              # Contributor guide and verification checklist
+├── LICENSE-APACHE               # Apache License, Version 2.0
+├── LICENSE-MIT                  # MIT License
 └── README.md                    # Project documentation
 ```
 
 ---
 
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) before opening a pull request.
+
+---
+
 ## License
 
-Ember is distributed under the terms of both the **MIT License** and the **Apache License (Version 2.0)**. See `LICENSE-MIT` and `LICENSE-APACHE` for details.
+Ember is dual-licensed under the **MIT License** and the **Apache License (Version 2.0)**. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) for details.
 

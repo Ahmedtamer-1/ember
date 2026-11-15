@@ -46,6 +46,8 @@ if (Test-Path "target\release\WebView2Loader.dll") {
 }
 Copy-Item "README.md" -Destination $pkgDir -ErrorAction SilentlyContinue
 Copy-Item "BENCHMARKS.md" -Destination $pkgDir -ErrorAction SilentlyContinue
+Copy-Item "LICENSE-MIT" -Destination $pkgDir -ErrorAction SilentlyContinue
+Copy-Item "LICENSE-APACHE" -Destination $pkgDir -ErrorAction SilentlyContinue
 if (Test-Path "assets") {
     Copy-Item "assets" -Destination $pkgDir -Recurse -Force -ErrorAction SilentlyContinue
 }

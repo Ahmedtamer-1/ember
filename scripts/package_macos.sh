@@ -36,6 +36,8 @@ fi
 
 cp "README.md" "${PKG_DIR}/" 2>/dev/null || true
 cp "BENCHMARKS.md" "${PKG_DIR}/" 2>/dev/null || true
+cp "LICENSE-MIT" "${PKG_DIR}/" 2>/dev/null || true
+cp "LICENSE-APACHE" "${PKG_DIR}/" 2>/dev/null || true
 
 # Generate one-click install script
 cat << 'EOF' > "${PKG_DIR}/install.sh"

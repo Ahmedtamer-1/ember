@@ -2,7 +2,13 @@
 name = "ember"
 version = "0.1.0"
 edition = "2021"
-description = "An extremely lightweight desktop web browser written in Rust"
+description = "An extremely lightweight, privacy-focused desktop web browser written in Rust"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/fouad-awad/ember"
+homepage = "https://github.com/fouad-awad/ember"
+readme = "README.md"
+keywords = ["browser", "webview", "wry", "privacy", "adblock"]
+categories = ["web-programming", "gui"]
 
 [lib]
 name = "ember"
