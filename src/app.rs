@@ -126,8 +126,6 @@ pub(crate) enum AppEvent {
     Tick,
     /// Raw IPC command string received from the top Chrome UI WebView.
     UiIpc(String),
-    /// Raw IPC message emitted inside the popup overlay WebView.
-    PopupIpc(String),
     /// Raw IPC message emitted inside a tab's content WebView.
     PageIpc { tab_id: usize, payload: String },
     /// Document title updated inside a tab's page WebView.
@@ -150,8 +148,10 @@ pub(crate) enum AppEvent {
     RefreshSettingsPage,
     /// Fallback timer (~300ms) to reveal a newly created tab WebView if first paint hasn't arrived yet.
     TabRevealTimeout { tab_id: usize },
-    /// Fallback timer (~160ms) to guarantee a closing popup OS window is hidden.
-    PopupCloseTimeout(u64),
+    /// Debug startup self-check timer (~2s) verifying the UI modules sent `ui_ready`.
+    UiReadyTimeout,
+    /// Self-test watchdog timer (~25s) in `--selftest` mode.
+    SelfTestTimeout,
     /// Ranked omnibox suggestions and optional inline autofill computed from the in-memory cache.
     OmniboxSuggestions {
         query_id: u64,
@@ -221,6 +221,7 @@ fn ensure_active_tab_webview(
             env.window,
         ))
         .with_clipboard(true)
+        .with_hotkeys_zoom(false)
         .with_devtools(cfg!(debug_assertions))
         .with_initialization_script(ui::PAGE_INIT_SCRIPT)
         .with_initialization_script(find::FIND_INIT_SCRIPT)
@@ -288,18 +289,22 @@ fn ensure_active_tab_webview(
     });
     permissions::attach_webview_permissions(&webview, Arc::clone(env.permissions));
 
-    // Apply remembered per-site zoom
-    let zoom_factor = resolve_zoom_for_url(env.storage, &url);
-    let _ = webview.zoom(zoom_factor);
-
     // Apply active theme to the new webview
     ui::apply_webview_theme(&webview, current_settings.theme);
 
-    // Load either internal `ember://` HTML or external URL
+    // Load either internal `ember://` HTML or external URL BEFORE zooming so WebView2's
+    // per-origin zoom never mutates `about:blank` (shared with the UI WebView).
     let page_ctx = env.page_ctx();
     load_target_into_webview(&webview, &url, &page_ctx);
+    let zoom_factor = if pages::is_internal_url(&url) {
+        1.0
+    } else {
+        resolve_zoom_for_url(env.storage, &url)
+    };
+    let _ = webview.zoom(zoom_factor);
 
     tabs.attach_webview(tab_id, webview);
+    ui::bring_chrome_webview_to_front(env.window);
     let reveal_proxy = env.proxy.clone();
     let _ = thread::Builder::new()
         .name(String::from("ember-tab-reveal"))
@@ -377,8 +382,8 @@ fn navigate_active_tab(
         } else {
             active.is_loading = true;
             if let Some(webview) = &active.webview {
-                let _ = webview.zoom(zoom_factor);
                 let _ = webview.load_url(&target_url);
+                let _ = webview.zoom(zoom_factor);
                 let _ = webview.focus();
             }
         }
@@ -505,6 +510,7 @@ fn sync_chrome_ui(
         tabs: &summaries,
     };
 
+    let _ = chrome_webview.zoom(1.0);
     let script = ui::build_state_sync_script(&sync_state);
     let _ = chrome_webview.evaluate_script(&script);
 
@@ -524,8 +530,31 @@ fn sync_chrome_ui(
 pub fn run() -> Result<(), Box<dyn Error>> {
     let _webview_version = ui::ensure_webview_runtime()?;
 
-    let storage = Storage::init()?;
-    let settings = SettingsStore::init()?;
+    let args: Vec<String> = std::env::args().collect();
+    let selftest_mode = args.iter().any(|a| a == "--selftest");
+    #[cfg(debug_assertions)]
+    let open_ui_devtools_on_start = args.iter().any(|a| a == "--ui-devtools")
+        || std::env::var("EMBER_UI_DEVTOOLS")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+
+    let _ = Storage::ensure_default_logs_dir();
+
+    let selftest_temp_dir = if selftest_mode {
+        let dir = std::env::temp_dir().join(format!("ember_selftest_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        Some(dir)
+    } else {
+        None
+    };
+
+    let storage = match &selftest_temp_dir {
+        Some(dir) => Storage::with_base_dir(dir.clone())?,
+        None => Storage::init()?,
+    };
+    let settings = match &selftest_temp_dir {
+        Some(dir) => SettingsStore::with_config_dir(dir.clone())?,
+        None => SettingsStore::init()?,
+    };
     let init_settings = settings.get();
     let adblocker = Adblocker::with_filters_dir(
         storage.filters_dir(),
@@ -561,13 +590,56 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let ipc_proxy = proxy.clone();
     let chrome_webview = WebViewBuilder::with_web_context(&mut web_context)
         .with_bounds(initial_chrome_bounds)
-        .with_background_color(ui::chrome_background_rgba(init_settings.theme, &window))
+        .with_transparent(true)
+        .with_hotkeys_zoom(false)
+        .with_devtools(cfg!(debug_assertions))
         .with_html(ui::CHROME_HTML)
         .with_ipc_handler(move |request| {
             let _ = ipc_proxy.send_event(AppEvent::UiIpc(request.body().clone()));
         })
         .build_as_child(&window)?;
+    let _ = chrome_webview.zoom(1.0);
+    ui::bring_chrome_webview_to_front(&window);
     ui::apply_webview_theme(&chrome_webview, init_settings.theme);
+
+    #[cfg(debug_assertions)]
+    if open_ui_devtools_on_start {
+        chrome_webview.open_devtools();
+    }
+
+    let mut selftest_active = selftest_mode;
+    let mut selftest_saw_popup_open = false;
+    let mut selftest_saw_popup_close = false;
+    let mut selftest_bounds_always_restored = true;
+    let mut selftest_overlay_open_count: usize = 0;
+    let mut selftest_overlay_close_count: usize = 0;
+    let mut last_selftest_report_json: Option<String> = None;
+
+    if selftest_mode {
+        storage.record_visit(
+            "https://selftest.ember.local/guide",
+            "Ember Self-Test Guide",
+        );
+        let st_proxy = proxy.clone();
+        let _ = thread::Builder::new()
+            .name(String::from("ember-selftest-timeout"))
+            .spawn(move || {
+                thread::sleep(Duration::from_secs(25));
+                let _ = st_proxy.send_event(AppEvent::SelfTestTimeout);
+            });
+    }
+
+    let mut ui_ready_received = false;
+    let mut ui_failed_modules: Vec<(String, String)> = Vec::new();
+    if cfg!(debug_assertions) {
+        let ready_proxy = proxy.clone();
+        let _ = thread::Builder::new()
+            .name(String::from("ember-ui-ready-check"))
+            .spawn(move || {
+                thread::sleep(Duration::from_secs(2));
+                let _ = ready_proxy.send_event(AppEvent::UiReadyTimeout);
+            });
+    }
 
     let mut bench_runner = BenchRunner::from_env();
     if bench_runner.is_some() {
@@ -651,20 +723,30 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         &downloads,
     );
 
-    let mut popup_manager = crate::popup::PopupManager::new();
+    let mut overlay_controller = crate::popup::OverlayController::new();
 
     let check_interval = tabs
         .suspend_timeout()
         .min(SUSPEND_CHECK_INTERVAL)
         .max(Duration::from_secs(1));
 
-    event_loop.run(move |event, window_target, control_flow| {
-        let wait_slice = if bench_runner.is_some() {
+    event_loop.run(move |event, _window_target, control_flow| {
+        let mut wait_slice = if bench_runner.is_some() {
             Duration::from_millis(250)
         } else {
             check_interval
         };
+        if overlay_controller.is_expanded() {
+            wait_slice = wait_slice.min(Duration::from_millis(50));
+        }
         *control_flow = ControlFlow::WaitUntil(Instant::now() + wait_slice);
+
+        if overlay_controller.is_expanded()
+            && overlay_controller.check_watchdog(Instant::now(), &chrome_webview, &window)
+            && !overlay_controller.is_at_toolbar_height(&chrome_webview, &window)
+        {
+            selftest_bounds_always_restored = false;
+        }
 
         if let Some(runner) = &mut bench_runner {
             if runner.current_idx >= runner.steps.len() {
@@ -757,30 +839,15 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 event: WindowEvent::Moved(_),
                 ..
             } if window_id == window.id() => {
-                if popup_manager.is_open() {
-                    popup_manager.hide_now();
-                    let _ = chrome_webview.evaluate_script(
-                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
-                    );
-                }
+                collapse_overlay_from_host(&mut overlay_controller, "window_move", &chrome_webview, &window);
             }
             Event::WindowEvent {
                 window_id,
                 event: WindowEvent::Focused(false),
                 ..
-            } => {
-                if popup_manager.is_open()
-                    && (popup_manager.is_popup_window(window_id)
-                        || !popup_manager.is_foreground_ours(&window))
-                {
-                    popup_manager.close(
-                        true,
-                        crate::popup::CloseReason::BlurOrOutsideClick,
-                        Some(&proxy),
-                    );
-                    let _ = chrome_webview.evaluate_script(
-                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
-                    );
+            } if window_id == window.id() => {
+                if overlay_controller.is_expanded() && !ui::is_window_foreground(&window) {
+                    collapse_overlay_from_host(&mut overlay_controller, "window_blur", &chrome_webview, &window);
                 }
             }
             Event::WindowEvent {
@@ -788,16 +855,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 event: WindowEvent::Resized(physical_size),
                 ..
             } if window_id == window.id() => {
-                if popup_manager.is_open() {
-                    popup_manager.hide_now();
-                    let _ = chrome_webview.evaluate_script(
-                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
-                    );
-                }
+                collapse_overlay_from_host(&mut overlay_controller, "window_resize", &chrome_webview, &window);
                 let (chrome_bounds, content_bounds) =
                     ui::compute_layout_bounds(physical_size, window.scale_factor());
                 current_content_bounds = content_bounds;
                 let _ = chrome_webview.set_bounds(chrome_bounds);
+                let _ = chrome_webview.zoom(1.0);
                 tabs.resize_all(content_bounds);
                 sync_chrome_ui(
                     &chrome_webview,
@@ -819,16 +882,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     },
                 ..
             } if window_id == window.id() => {
-                if popup_manager.is_open() {
-                    popup_manager.hide_now();
-                    let _ = chrome_webview.evaluate_script(
-                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
-                    );
-                }
+                collapse_overlay_from_host(&mut overlay_controller, "dpi_change", &chrome_webview, &window);
                 let (chrome_bounds, content_bounds) =
                     ui::compute_layout_bounds(*new_inner_size, scale_factor);
                 current_content_bounds = content_bounds;
                 let _ = chrome_webview.set_bounds(chrome_bounds);
+                let _ = chrome_webview.zoom(1.0);
                 tabs.resize_all(content_bounds);
                 sync_chrome_ui(
                     &chrome_webview,
@@ -847,8 +906,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             } => {
                 ui::apply_window_chrome_style(&window);
                 let theme_pref = settings.get().theme;
-                let _ = chrome_webview
-                    .set_background_color(ui::chrome_background_rgba(theme_pref, &window));
+                ui::apply_webview_theme(&chrome_webview, theme_pref);
                 let content_bg = ui::theme_background_rgba(theme_pref, &window);
                 tabs.for_each_webview(|wv| {
                     let _ = wv.set_background_color(content_bg);
@@ -893,13 +951,123 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &downloads,
                                 );
                             }
-                            UiCommand::NewTab => {
-                                if popup_manager.is_open() {
-                                    popup_manager.hide_now();
+                            UiCommand::UiReady => {
+                                ui_ready_received = true;
+                                if selftest_mode {
+                                    selftest_active = true;
+                                    selftest_saw_popup_open = false;
+                                    selftest_saw_popup_close = false;
+                                    selftest_bounds_always_restored = true;
+                                    selftest_overlay_open_count = 0;
+                                    selftest_overlay_close_count = 0;
+                                    window.set_focus();
+                                    let _ = chrome_webview.focus();
                                     let _ = chrome_webview.evaluate_script(
-                                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                                        "if (typeof window.__emberRunSelfTest === 'function') { window.__emberRunSelfTest(); }",
                                     );
                                 }
+                            }
+                            UiCommand::UiInitError { module, error } => {
+                                eprintln!(
+                                    "[ember][ui-self-check] UI module '{module}' failed to initialize: {error}"
+                                );
+                                storage.log_ui_js_error(
+                                    "ui_init_error",
+                                    &format!("{module}: {error}"),
+                                );
+                                ui_failed_modules.push((module, error));
+                            }
+                            UiCommand::UiJsError(payload) => {
+                                eprintln!("[ember][ui-js-error] {payload}");
+                                storage.log_ui_js_error("ui", &payload);
+                            }
+                            UiCommand::OpenUiDevTools => {
+                                #[cfg(debug_assertions)]
+                                {
+                                    chrome_webview.open_devtools();
+                                }
+                            }
+                            UiCommand::SelfTestReport(report_json) => {
+                                let mut parsed = parse_selftest_report(&report_json);
+                                let rust_tab_count = tabs.summaries().len();
+                                let popup_currently_open = overlay_controller.is_expanded();
+                                let bounds_at_toolbar_now =
+                                    overlay_controller.is_at_toolbar_height(&chrome_webview, &window);
+                                if !bounds_at_toolbar_now {
+                                    selftest_bounds_always_restored = false;
+                                }
+
+                                for item in &mut parsed.items {
+                                    if item.name == "popup opens and closes" {
+                                        let rust_popup_ok = selftest_saw_popup_open
+                                            && selftest_saw_popup_close
+                                            && !popup_currently_open
+                                            && selftest_bounds_always_restored;
+                                        item.pass = item.pass && rust_popup_ok;
+                                        item.detail = format!(
+                                            "{}; rustOpen={selftest_saw_popup_open} rustClosed={selftest_saw_popup_close} currentlyExpanded={popup_currently_open} opens={selftest_overlay_open_count} closes={selftest_overlay_close_count} boundsAlwaysRestored={selftest_bounds_always_restored}",
+                                            item.detail
+                                        );
+                                    } else if item.name.contains("50 times") {
+                                        let rust_stress_ok = selftest_overlay_open_count >= 450
+                                            && selftest_overlay_close_count >= 450
+                                            && selftest_bounds_always_restored
+                                            && !popup_currently_open;
+                                        item.pass = item.pass && rust_stress_ok;
+                                        item.detail = format!(
+                                            "{}; rustOpens={selftest_overlay_open_count} rustCloses={selftest_overlay_close_count} boundsAlwaysRestored={selftest_bounds_always_restored}",
+                                            item.detail
+                                        );
+                                    } else if item.name == "DOM tab count equals Rust tab count" {
+                                        let rust_count_match = parsed.dom_count
+                                            == Some(rust_tab_count)
+                                            && parsed.all_dom_count == Some(rust_tab_count);
+                                        item.pass = item.pass && rust_count_match;
+                                        item.detail = format!(
+                                            "{}; rustTabs={rust_tab_count}",
+                                            item.detail
+                                        );
+                                    }
+                                    println!(
+                                        "{}: {} ({})",
+                                        if item.pass { "PASS" } else { "FAIL" },
+                                        item.name,
+                                        item.detail
+                                    );
+                                }
+
+                                let all_passed = parsed.items.len() >= 9
+                                    && parsed.items.iter().all(|item| item.pass);
+                                let verified_json = build_selftest_report_json(&parsed.items);
+                                last_selftest_report_json = Some(verified_json.clone());
+
+                                let render_script = format!(
+                                    "if (typeof window.__emberRenderSelfTestReport === 'function') {{ window.__emberRenderSelfTestReport({verified_json}); }}"
+                                );
+                                for summary in tabs.summaries() {
+                                    if summary.url == pages::SELFTEST_URL {
+                                        if let Some(tab) = tabs.get_tab(summary.id) {
+                                            if let Some(wv) = &tab.webview {
+                                                let _ = wv.evaluate_script(&render_script);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                selftest_active = false;
+                                if selftest_mode {
+                                    if let Some(ref dir) = selftest_temp_dir {
+                                        let _ = std::fs::remove_dir_all(dir);
+                                    }
+                                    if all_passed {
+                                        *control_flow = ControlFlow::Exit;
+                                    } else {
+                                        std::process::exit(1);
+                                    }
+                                }
+                            }
+                            UiCommand::NewTab => {
+                                collapse_overlay_from_host(&mut overlay_controller, "new_tab", &chrome_webview, &window);
                                 tabs.create_tab(&settings.get().homepage, true);
                                 let mut env = WebViewEnv {
                                     window: &window,
@@ -923,6 +1091,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &find_state,
                                     &downloads,
                                 );
+                                if selftest_active {
+                                    let _ = chrome_webview.focus();
+                                }
                             }
                             UiCommand::NewWindow => {
                                 if let Ok(exe) = std::env::current_exe() {
@@ -930,12 +1101,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             UiCommand::OpenNewTab(target_url) => {
-                                if popup_manager.is_open() {
-                                    popup_manager.hide_now();
-                                    let _ = chrome_webview.evaluate_script(
-                                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
-                                    );
-                                }
+                                collapse_overlay_from_host(&mut overlay_controller, "open_new_tab", &chrome_webview, &window);
                                 let normalized = ui::normalize_omnibox_input(
                                     &target_url,
                                     settings.get().search_engine,
@@ -979,35 +1145,49 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     let _ = webview.evaluate_script("window.print();");
                                 }
                             }
-                            UiCommand::OpenPopup(json_payload) => {
-                                if let Some(req) = crate::popup::parse_open_popup_payload(&json_payload) {
-                                    let mut appearance = ui::query_window_appearance(&window);
-                                    appearance.is_dark =
-                                        settings.get().theme.resolve_is_dark(appearance.is_dark);
-                                    let reduced_motion = !settings.get().tab_animations_enabled;
-                                    let _ = popup_manager.open(
-                                        crate::popup::PopupOpenContext {
-                                            event_loop: window_target,
-                                            main_window: &window,
-                                            web_context: &mut web_context,
-                                            proxy: &proxy,
-                                            appearance: &appearance,
-                                            reduced_motion,
-                                        },
-                                        &req,
-                                    );
+                            UiCommand::OverlayExpand(kind_raw) => {
+                                let kind = crate::popup::OverlayKind::parse(&kind_raw)
+                                    .unwrap_or(crate::popup::OverlayKind::Omnibox);
+                                let already_same = overlay_controller.is_expanded()
+                                    && overlay_controller.active_kind() == Some(kind);
+                                overlay_controller.expand(kind, &chrome_webview, &window);
+                                selftest_saw_popup_open = true;
+                                if !already_same {
+                                    selftest_overlay_open_count += 1;
+                                }
+                                let expand_script = format!(
+                                    "if(window.__emberOnOverlayExpanded){{window.__emberOnOverlayExpanded(\"{}\");}}",
+                                    kind.as_str()
+                                );
+                                let _ = chrome_webview.evaluate_script(&expand_script);
+                            }
+                            UiCommand::OverlayShrink(reason) => {
+                                storage.cancel_pending_queries();
+                                overlay_controller.collapse(&reason, &chrome_webview, &window);
+                                if !overlay_controller.is_at_toolbar_height(&chrome_webview, &window)
+                                {
+                                    selftest_bounds_always_restored = false;
+                                }
+                                selftest_saw_popup_close = true;
+                                selftest_overlay_close_count += 1;
+                                let _ = chrome_webview.evaluate_script(
+                                    "if(window.__emberOnOverlayCollapsed){window.__emberOnOverlayCollapsed();}",
+                                );
+                            }
+                            UiCommand::OmniboxFocus => {
+                                overlay_controller.on_omnibox_focus();
+                                if selftest_active {
+                                    let _ = chrome_webview.focus();
                                 }
                             }
-                            UiCommand::ClosePopup => {
-                                storage.cancel_pending_queries();
-                                popup_manager.close(
-                                    true,
-                                    crate::popup::CloseReason::Explicit,
-                                    Some(&proxy),
-                                );
-                                popup_manager.assert_closed_invariant("close_popup");
-                                let _ = chrome_webview.evaluate_script(
-                                    "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                            UiCommand::OmniboxBlur => {
+                                overlay_controller.on_omnibox_blur(Instant::now());
+                            }
+                            UiCommand::OverlayVisibility { visible, kind } => {
+                                overlay_controller.on_dropdown_visibility(
+                                    visible,
+                                    crate::popup::OverlayKind::parse(&kind),
+                                    Instant::now(),
                                 );
                             }
                             UiCommand::OmniboxSuggest {
@@ -1015,17 +1195,31 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 allow_autofill,
                                 query,
                             } => {
-                                let (autofill, suggestions) =
+                                crate::popup::popup_debug_log(&format!(
+                                    "omnibox_suggest recv seq={query_id} autofill={allow_autofill} q={query:?}"
+                                ));
+                                let s = settings.get();
+                                let (autofill, mut suggestions) =
                                     storage.query_omnibox_cached(&query, allow_autofill, 8);
+                                ui::ensure_default_omnibox_row(
+                                    &query,
+                                    s.search_engine,
+                                    &mut suggestions,
+                                );
+                                crate::popup::popup_debug_log(&format!(
+                                    "omnibox_suggest reply seq={query_id} count={} autofill={}",
+                                    suggestions.len(),
+                                    autofill.is_some()
+                                ));
                                 let _ = proxy.send_event(AppEvent::OmniboxSuggestions {
                                     query_id,
                                     autofill: autofill.clone(),
                                     suggestions: suggestions.clone(),
                                 });
 
-                                let s = settings.get();
                                 if s.search_suggestions_enabled && suggestions.len() < 8 {
                                     let suggest_proxy = proxy.clone();
+                                    let query_for_default = query.clone();
                                     storage.suggest_async(
                                         query_id,
                                         query,
@@ -1055,6 +1249,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                                     online_suggestions.truncate(8);
                                                 }
                                             }
+                                            ui::ensure_default_omnibox_row(
+                                                &query_for_default,
+                                                s.search_engine,
+                                                &mut online_suggestions,
+                                            );
                                             let _ = suggest_proxy.send_event(
                                                 AppEvent::OmniboxSuggestions {
                                                     query_id: qid,
@@ -1066,16 +1265,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     );
                                 }
                             }
-                            UiCommand::OmniboxSelect(idx) => {
-                                popup_manager.update_data(&format!("{{\"selectedIndex\":{idx}}}"));
-                            }
+                            UiCommand::OmniboxSelect(_) => {}
                             UiCommand::SwitchTab(tab_id) => {
-                                if popup_manager.is_open() {
-                                    popup_manager.hide_now();
-                                    let _ = chrome_webview.evaluate_script(
-                                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
-                                    );
-                                }
+                                collapse_overlay_from_host(
+                                    &mut overlay_controller,
+                                    "switch_tab",
+                                    &chrome_webview,
+                                    &window,
+                                );
                                 if tabs.switch_to(tab_id) {
                                     let mut env = WebViewEnv {
                                         window: &window,
@@ -1102,6 +1299,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             UiCommand::NextTab => {
+                                collapse_overlay_from_host(
+                                    &mut overlay_controller,
+                                    "next_tab",
+                                    &chrome_webview,
+                                    &window,
+                                );
                                 if tabs.switch_next_tab() {
                                     let mut env = WebViewEnv {
                                         window: &window,
@@ -1125,9 +1328,18 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &find_state,
                                         &downloads,
                                     );
+                                    if selftest_active {
+                                        let _ = chrome_webview.focus();
+                                    }
                                 }
                             }
                             UiCommand::PrevTab => {
+                                collapse_overlay_from_host(
+                                    &mut overlay_controller,
+                                    "prev_tab",
+                                    &chrome_webview,
+                                    &window,
+                                );
                                 if tabs.switch_prev_tab() {
                                     let mut env = WebViewEnv {
                                         window: &window,
@@ -1151,9 +1363,18 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &find_state,
                                         &downloads,
                                     );
+                                    if selftest_active {
+                                        let _ = chrome_webview.focus();
+                                    }
                                 }
                             }
                             UiCommand::SwitchTabIndex(num) => {
+                                collapse_overlay_from_host(
+                                    &mut overlay_controller,
+                                    "switch_tab_index",
+                                    &chrome_webview,
+                                    &window,
+                                );
                                 if tabs.switch_to_shortcut_number(num) {
                                     let mut env = WebViewEnv {
                                         window: &window,
@@ -1180,6 +1401,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             UiCommand::CloseTab(tab_id) => {
+                                collapse_overlay_from_host(
+                                    &mut overlay_controller,
+                                    "close_tab",
+                                    &chrome_webview,
+                                    &window,
+                                );
                                 if tabs.close_tab(tab_id) == CloseTabOutcome::LastTabClosed {
                                     *control_flow = ControlFlow::Exit;
                                 } else {
@@ -1208,6 +1435,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             UiCommand::DuplicateTab(tab_id) => {
+                                collapse_overlay_from_host(
+                                    &mut overlay_controller,
+                                    "duplicate_tab",
+                                    &chrome_webview,
+                                    &window,
+                                );
                                 if tabs.duplicate_tab(tab_id, true).is_some() {
                                     let mut env = WebViewEnv {
                                         window: &window,
@@ -1265,6 +1498,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             UiCommand::ReopenClosedTab => {
+                                collapse_overlay_from_host(
+                                    &mut overlay_controller,
+                                    "reopen_tab",
+                                    &chrome_webview,
+                                    &window,
+                                );
                                 if tabs.reopen_closed_tab().is_some() {
                                     let mut env = WebViewEnv {
                                         window: &window,
@@ -1292,12 +1531,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             }
                             UiCommand::Navigate(raw_input) => {
                                 storage.cancel_pending_queries();
-                                if popup_manager.is_open() {
-                                    popup_manager.hide_now();
-                                    let _ = chrome_webview.evaluate_script(
-                                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
-                                    );
-                                }
+                                collapse_overlay_from_host(
+                                    &mut overlay_controller,
+                                    "navigation_start",
+                                    &chrome_webview,
+                                    &window,
+                                );
                                 let trimmed = raw_input.trim();
                                 let is_direct_url = !trimmed.contains(' ')
                                     && (trimmed.contains('.')
@@ -1322,12 +1561,23 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     proxy: &proxy,
                                     content_bounds: current_content_bounds,
                                 };
-                                navigate_active_tab(
-                                    &mut tabs,
-                                    &mut env,
-                                    &mut find_state,
+                                let normalized_nav = crate::ui::normalize_omnibox_input(
                                     &raw_input,
+                                    settings.get().search_engine,
                                 );
+                                let same_selftest_internal = selftest_active
+                                    && pages::is_internal_url(&normalized_nav)
+                                    && tabs
+                                        .active_tab()
+                                        .is_some_and(|t| t.url == normalized_nav);
+                                if !same_selftest_internal {
+                                    navigate_active_tab(
+                                        &mut tabs,
+                                        &mut env,
+                                        &mut find_state,
+                                        &raw_input,
+                                    );
+                                }
                                 sync_chrome_ui(
                                     &chrome_webview,
                                     &window,
@@ -1338,8 +1588,17 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &find_state,
                                     &downloads,
                                 );
+                                if selftest_active {
+                                    let _ = chrome_webview.focus();
+                                }
                             }
                             UiCommand::Back => {
+                                collapse_overlay_from_host(
+                                    &mut overlay_controller,
+                                    "back",
+                                    &chrome_webview,
+                                    &window,
+                                );
                                 if let Some(active) = tabs.active_tab() {
                                     if let Some(webview) = &active.webview {
                                         let _ = webview.evaluate_script("window.history.back();");
@@ -1347,6 +1606,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             UiCommand::Forward => {
+                                collapse_overlay_from_host(
+                                    &mut overlay_controller,
+                                    "forward",
+                                    &chrome_webview,
+                                    &window,
+                                );
                                 if let Some(active) = tabs.active_tab() {
                                     if let Some(webview) = &active.webview {
                                         let _ =
@@ -1355,6 +1620,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             UiCommand::Reload => {
+                                collapse_overlay_from_host(
+                                    &mut overlay_controller,
+                                    "reload",
+                                    &chrome_webview,
+                                    &window,
+                                );
                                 reload_active_tab(&mut tabs, &storage, &settings, &adblocker);
                                 sync_chrome_ui(
                                     &chrome_webview,
@@ -1368,6 +1639,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 );
                             }
                             UiCommand::Home => {
+                                collapse_overlay_from_host(
+                                    &mut overlay_controller,
+                                    "home",
+                                    &chrome_webview,
+                                    &window,
+                                );
                                 let home = settings.get().homepage.clone();
                                 let mut env = WebViewEnv {
                                     window: &window,
@@ -1587,7 +1864,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 }
                 AppEvent::PageIpc { tab_id, payload } => {
                     if let Some(page_event) = ui::parse_page_ipc_event(&payload) {
-                        if popup_manager.is_open()
+                        if overlay_controller.is_expanded()
                             && matches!(
                                 page_event,
                                 PageIpcEvent::ShortcutNewTab
@@ -1602,9 +1879,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     | PageIpcEvent::ShortcutFocusOmnibox
                             )
                         {
-                            popup_manager.hide_now();
-                            let _ = chrome_webview.evaluate_script(
-                                "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                            collapse_overlay_from_host(
+                                &mut overlay_controller,
+                                "page_shortcut",
+                                &chrome_webview,
+                                &window,
                             );
                         }
                         match page_event {
@@ -2042,16 +2321,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 );
                             }
                             PageIpcEvent::PointerDown => {
-                                if popup_manager.is_open() {
-                                    popup_manager.close(
-                                        true,
-                                        crate::popup::CloseReason::BlurOrOutsideClick,
-                                        Some(&proxy),
-                                    );
-                                    let _ = chrome_webview.evaluate_script(
-                                        "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
-                                    );
-                                }
+                                collapse_overlay_from_host(
+                                    &mut overlay_controller,
+                                    "page_pointer_down",
+                                    &chrome_webview,
+                                    &window,
+                                );
                             }
                             PageIpcEvent::SpaNav(spa_url) => {
                                 let changed = tabs.update_page_load(tab_id, spa_url.clone(), false);
@@ -2144,9 +2419,6 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 if let Some(theme) = theme_to_apply {
                                     ui::apply_theme_preference(&window, theme);
                                     ui::apply_webview_theme(&chrome_webview, theme);
-                                    let _ = chrome_webview.set_background_color(
-                                        ui::chrome_background_rgba(theme, &window),
-                                    );
                                     let content_bg = ui::theme_background_rgba(theme, &window);
                                     tabs.for_each_webview(|wv| {
                                         ui::apply_webview_theme(wv, theme);
@@ -2279,6 +2551,23 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                             &arg,
                                         );
                                     }
+                                    "run_selftest" => {
+                                        selftest_active = true;
+                                        selftest_saw_popup_open = false;
+                                        selftest_saw_popup_close = false;
+                                        selftest_bounds_always_restored = true;
+                                        selftest_overlay_open_count = 0;
+                                        selftest_overlay_close_count = 0;
+                                        storage.record_visit(
+                                            "https://selftest.ember.local/guide",
+                                            "Ember Self-Test Guide",
+                                        );
+                                        window.set_focus();
+                                        let _ = chrome_webview.focus();
+                                        let _ = chrome_webview.evaluate_script(
+                                            "if (typeof window.__emberRunSelfTest === 'function') { window.__emberRunSelfTest(); }",
+                                        );
+                                    }
                                     _ => {}
                                 }
                                 sync_chrome_ui(
@@ -2342,10 +2631,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     url,
                     is_loading,
                 } => {
-                    if is_loading && tab_id == tabs.active_tab_id() && popup_manager.is_open() {
-                        popup_manager.hide_now();
-                        let _ = chrome_webview.evaluate_script(
-                            "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
+                    if is_loading && tab_id == tabs.active_tab_id() {
+                        collapse_overlay_from_host(
+                            &mut overlay_controller,
+                            "navigation_start",
+                            &chrome_webview,
+                            &window,
                         );
                     }
                     let changed = tabs.update_page_load(tab_id, url, is_loading);
@@ -2362,6 +2653,17 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             if let Some(runner) = &mut bench_runner {
                                 if runner.step_finished_load_at.is_none() {
                                     runner.step_finished_load_at = Some(Instant::now());
+                                }
+                            }
+                        }
+                        if let Some(ref report_json) = last_selftest_report_json {
+                            if let Some(tab) = tabs.get_tab(tab_id) {
+                                if tab.url == pages::SELFTEST_URL {
+                                    if let Some(wv) = &tab.webview {
+                                        let _ = wv.evaluate_script(&format!(
+                                            "if (typeof window.__emberRenderSelfTestReport === 'function') {{ window.__emberRenderSelfTestReport({report_json}); }}"
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -2491,6 +2793,20 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     autofill,
                     suggestions,
                 } => {
+                    if !suggestions.is_empty() && overlay_controller.is_omnibox_focused() {
+                        let already_omnibox = overlay_controller.is_expanded()
+                            && overlay_controller.active_kind()
+                                == Some(crate::popup::OverlayKind::Omnibox);
+                        overlay_controller.expand(
+                            crate::popup::OverlayKind::Omnibox,
+                            &chrome_webview,
+                            &window,
+                        );
+                        selftest_saw_popup_open = true;
+                        if !already_omnibox {
+                            selftest_overlay_open_count += 1;
+                        }
+                    }
                     let mut items_json = String::from("[");
                     for (idx, item) in suggestions.iter().enumerate() {
                         if idx > 0 {
@@ -2529,80 +2845,54 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     );
                     let _ = chrome_webview.evaluate_script(&script);
                 }
-                AppEvent::PopupCloseTimeout(close_gen) => {
-                    popup_manager.finish_close(close_gen);
-                }
-                AppEvent::PopupIpc(payload) => {
-                    let trimmed = payload.trim();
-                    if trimmed == "popup_init_ready" {
-                        popup_manager.on_init_ready();
-                    } else if let Some(gen_str) = trimmed.strip_prefix("popup_ready:") {
-                        let gen = gen_str.trim().parse::<u64>().unwrap_or(0);
-                        popup_manager.on_ready_to_show(gen);
-                    } else if let Some(gen_str) = trimmed.strip_prefix("popup_closed:") {
-                        let gen = gen_str.trim().parse::<u64>().unwrap_or(0);
-                        popup_manager.finish_close(gen);
-                    } else if trimmed == "popup_ready" {
-                        popup_manager.on_ready_to_show(0);
-                    } else if trimmed == "popup_closed" {
-                        popup_manager.hide_now();
-                    } else if trimmed == "popup_close_request" {
-                        popup_manager.close(
-                            true,
-                            crate::popup::CloseReason::Explicit,
-                            Some(&proxy),
-                        );
-                        let _ = chrome_webview.evaluate_script(
-                            "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
-                        );
-                    } else if let Some(cmd) = trimmed.strip_prefix("popup_keep_open:") {
-                        match cmd.trim() {
-                            "zoom_in" => {
-                                adjust_active_tab_zoom(&tabs, &storage, zoom::zoom_in);
-                            }
-                            "zoom_out" => {
-                                adjust_active_tab_zoom(&tabs, &storage, zoom::zoom_out);
-                            }
-                            "zoom_reset" => {
-                                adjust_active_tab_zoom(&tabs, &storage, |_| zoom::zoom_reset());
-                            }
-                            _ => {}
-                        }
-                        sync_chrome_ui(
-                            &chrome_webview,
-                            &window,
-                            &tabs,
-                            &storage,
-                            &adblocker,
-                            &settings,
-                            &find_state,
-                            &downloads,
-                        );
-                        let zoom_pct = tabs
-                            .active_tab()
-                            .map(|t| resolve_zoom_for_url(&storage, &t.url))
-                            .map_or(100, zoom::zoom_percent);
-                        popup_manager.update_data(&format!("{{\"zoomPercent\":{zoom_pct}}}"));
-                    } else if let Some(cmd) = trimmed.strip_prefix("popup_action:") {
-                        popup_manager.hide_now();
-                        let _ = chrome_webview.evaluate_script(
-                            "if(window.__emberOnPopupClosed){window.__emberOnPopupClosed();}",
-                        );
-                        let action = cmd.trim();
-                        if action == "open_find" {
-                            let _ = chrome_webview.focus();
-                            let _ = chrome_webview.evaluate_script(
-                                "if(window.__emberOpenFind){window.__emberOpenFind();}",
-                            );
+                AppEvent::UiReadyTimeout => {
+                    if cfg!(debug_assertions) && (!ui_ready_received || !ui_failed_modules.is_empty())
+                    {
+                        if ui_failed_modules.is_empty() {
+                            let msg = "ERROR: 'ui_ready' IPC did not arrive within 2s; failed modules: [popup_client, toolbar, omnibox, tab_strip]";
+                            eprintln!("[ember][ui-self-check] {msg}");
+                            storage.log_ui_js_error("ui_ready_timeout", msg);
                         } else {
-                            let _ = proxy.send_event(AppEvent::UiIpc(action.to_owned()));
+                            let list: Vec<String> = ui_failed_modules
+                                .iter()
+                                .map(|(m, e)| format!("{m} ({e})"))
+                                .collect();
+                            let msg = format!(
+                                "ERROR: UI initialization incomplete after 2s; failed modules: {}",
+                                list.join(", ")
+                            );
+                            eprintln!("[ember][ui-self-check] {msg}");
+                            storage.log_ui_js_error("ui_ready_timeout", &msg);
                         }
+                    }
+                }
+                AppEvent::SelfTestTimeout => {
+                    if selftest_mode && selftest_active {
+                        eprintln!("FAIL: self-test timed out after 25s");
+                        storage.log_ui_js_error("selftest", "Self-test timed out after 25s");
+                        if let Some(ref dir) = selftest_temp_dir {
+                            let _ = std::fs::remove_dir_all(dir);
+                        }
+                        std::process::exit(1);
                     }
                 }
             },
             _ => {}
         }
     });
+}
+
+fn collapse_overlay_from_host(
+    overlay: &mut crate::popup::OverlayController,
+    reason: &str,
+    chrome_webview: &WebView,
+    window: &Window,
+) {
+    if overlay.is_expanded() {
+        overlay.collapse(reason, chrome_webview, window);
+        let _ = chrome_webview
+            .evaluate_script("if(window.closeSuggestions){window.closeSuggestions('host_event');}");
+    }
 }
 
 fn push_js_quoted(out: &mut String, s: &str) {
@@ -2623,5 +2913,125 @@ fn open_directory_in_shell(dir: &std::path::Path) {
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelfTestItem {
+    name: String,
+    pass: bool,
+    detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelfTestParsedReport {
+    items: Vec<SelfTestItem>,
+    dom_count: Option<usize>,
+    all_dom_count: Option<usize>,
+}
+
+fn parse_selftest_report(json: &str) -> SelfTestParsedReport {
+    let mut items = Vec::new();
+    if let Some(items_pos) = json.find("\"items\"") {
+        let rest = &json[items_pos + "\"items\"".len()..];
+        if let Some(arr_start) = rest.find('[') {
+            let arr_slice = &rest[arr_start + 1..];
+            let mut in_str = false;
+            let mut escape = false;
+            let mut obj_depth = 0i32;
+            let mut obj_start = None;
+
+            for (idx, ch) in arr_slice.char_indices() {
+                if escape {
+                    escape = false;
+                    continue;
+                }
+                if in_str {
+                    if ch == '\\' {
+                        escape = true;
+                    } else if ch == '"' {
+                        in_str = false;
+                    }
+                    continue;
+                }
+                match ch {
+                    '"' => in_str = true,
+                    '{' => {
+                        if obj_depth == 0 {
+                            obj_start = Some(idx);
+                        }
+                        obj_depth += 1;
+                    }
+                    '}' => {
+                        obj_depth -= 1;
+                        if obj_depth == 0 {
+                            if let Some(start) = obj_start.take() {
+                                let obj = &arr_slice[start..=idx];
+                                let name = crate::popup::extract_json_string(obj, "name")
+                                    .unwrap_or_else(|| String::from("unknown"));
+                                let pass =
+                                    crate::popup::extract_json_bool(obj, "pass").unwrap_or(false);
+                                let detail = crate::popup::extract_json_string(obj, "detail")
+                                    .unwrap_or_default();
+                                items.push(SelfTestItem { name, pass, detail });
+                            }
+                        }
+                    }
+                    ']' if obj_depth == 0 => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let dom_count = crate::popup::extract_json_number(json, "domCount").map(|n| n as usize);
+    let all_dom_count = crate::popup::extract_json_number(json, "allDomCount").map(|n| n as usize);
+    SelfTestParsedReport {
+        items,
+        dom_count,
+        all_dom_count,
+    }
+}
+
+fn build_selftest_report_json(items: &[SelfTestItem]) -> String {
+    let mut out = String::from("{\"items\":[");
+    for (idx, item) in items.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"name\":");
+        push_js_quoted(&mut out, &item.name);
+        out.push_str(",\"pass\":");
+        out.push_str(if item.pass { "true" } else { "false" });
+        out.push_str(",\"detail\":");
+        push_js_quoted(&mut out, &item.detail);
+        out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_selftest_report_extracts_items_and_counts() {
+        let json = r#"{"items":[{"name":"UI scripts initialized without errors","pass":true,"detail":"ok"},{"name":"DOM tab count equals Rust tab count","pass":false,"detail":"mismatch {0}"}],"domCount":2,"allDomCount":2}"#;
+        let parsed = parse_selftest_report(json);
+        assert_eq!(parsed.items.len(), 2);
+        assert_eq!(
+            parsed.items[0].name,
+            "UI scripts initialized without errors"
+        );
+        assert!(parsed.items[0].pass);
+        assert_eq!(parsed.items[1].detail, "mismatch {0}");
+        assert!(!parsed.items[1].pass);
+        assert_eq!(parsed.dom_count, Some(2));
+        assert_eq!(parsed.all_dom_count, Some(2));
+
+        let rebuilt = build_selftest_report_json(&parsed.items);
+        assert!(rebuilt.contains("\"pass\":true"));
+        assert!(rebuilt.contains("\"pass\":false"));
     }
 }

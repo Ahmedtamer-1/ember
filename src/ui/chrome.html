@@ -7,6 +7,10 @@
 <style>
   :root {
     color-scheme: light dark;
+    --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    --font-size-tab: 12px;
+    --font-size-omnibox: 14px;
+    --font-size-menu: 13px;
     --tab-anim-duration: 180ms;
     --tab-anim-ease: cubic-bezier(0.2, 0, 0, 1);
     --btn-anim-duration: 120ms;
@@ -39,6 +43,9 @@
     --snap-bg: #f8f9fa;
     --snap-zone-bg: rgba(60, 64, 67, 0.08);
     --snap-zone-border: rgba(60, 64, 67, 0.28);
+    --dropdown-bg: #ffffff;
+    --dropdown-border: rgba(60, 64, 67, 0.2);
+    --dropdown-shadow: 0 8px 24px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.08);
   }
 
   @media (prefers-color-scheme: dark) {
@@ -65,6 +72,9 @@
       --snap-bg: #292a2d;
       --snap-zone-bg: rgba(255, 255, 255, 0.07);
       --snap-zone-border: rgba(255, 255, 255, 0.26);
+      --dropdown-bg: #292a2d;
+      --dropdown-border: #3c4043;
+      --dropdown-shadow: 0 10px 28px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.28);
     }
   }
 
@@ -90,6 +100,9 @@
     --snap-bg: #292a2d;
     --snap-zone-bg: rgba(255, 255, 255, 0.07);
     --snap-zone-border: rgba(255, 255, 255, 0.26);
+    --dropdown-bg: #292a2d;
+    --dropdown-border: #3c4043;
+    --dropdown-shadow: 0 10px 28px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.28);
   }
 
   * {
@@ -104,18 +117,24 @@
     width: 100%;
     height: 100%;
     overflow: hidden;
-    font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
-    font-size: 13px;
+    font-family: var(--font-ui);
+    font-size: var(--font-size-menu);
+    font-weight: 400;
+    text-size-adjust: 100%;
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
     color: var(--text-primary);
-    background: var(--toolbar-bg);
+    background: transparent;
   }
 
   .chrome-shell {
     position: relative;
+    z-index: 100;
     display: flex;
     flex-direction: column;
     width: 100%;
     height: 84px;
+    background: var(--toolbar-bg);
   }
 
   /* Integrated Title Bar + Tab Strip (38px) */
@@ -310,7 +329,9 @@
     text-overflow: ellipsis;
     -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent);
     mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent);
-    font-size: 12px;
+    font-family: var(--font-ui);
+    font-size: var(--font-size-tab);
+    font-weight: 400;
     line-height: 16px;
     opacity: var(--tab-title-opacity, 1);
     transition: opacity var(--tab-anim-duration) ease;
@@ -666,6 +687,15 @@
     border-color: var(--accent);
   }
 
+  .omnibox-wrapper.dropdown-open {
+    border-radius: 16px 16px 0 0;
+    border-bottom-color: transparent;
+    background: var(--omnibox-focus-bg);
+    border-color: var(--accent);
+    position: relative;
+    z-index: 112;
+  }
+
   .omnibox-icon {
     width: var(--omnibox-icon-size);
     height: var(--omnibox-icon-size);
@@ -690,8 +720,9 @@
     outline: none;
     background: transparent;
     color: var(--text-primary);
-    font-family: inherit;
-    font-size: 13px;
+    font-family: var(--font-ui);
+    font-size: var(--font-size-omnibox);
+    font-weight: 400;
     user-select: text;
     -webkit-user-select: text;
   }
@@ -703,8 +734,9 @@
     border-radius: 14px;
     background-color: var(--badge-on-bg);
     color: var(--badge-on-text);
-    font-size: 11.5px;
-    font-weight: 600;
+    font-family: var(--font-ui);
+    font-size: var(--font-size-tab);
+    font-weight: 500;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -763,8 +795,9 @@
     border-radius: 11px;
     background: transparent;
     color: var(--text-secondary);
-    font-size: 11.5px;
-    font-weight: 600;
+    font-family: var(--font-ui);
+    font-size: var(--font-size-tab);
+    font-weight: 500;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
@@ -894,14 +927,16 @@
     outline: none;
     background: transparent;
     color: var(--text-primary);
-    font-family: inherit;
-    font-size: 12px;
+    font-family: var(--font-ui);
+    font-size: var(--font-size-tab);
+    font-weight: 400;
     user-select: text;
     -webkit-user-select: text;
   }
 
   .find-count {
-    font-size: 11px;
+    font-size: var(--font-size-tab);
+    font-weight: 400;
     color: var(--text-secondary);
     font-variant-numeric: tabular-nums;
     padding: 0 3px;
@@ -914,7 +949,9 @@
     border-radius: 50%;
     background: transparent;
     color: var(--text-secondary);
-    font-size: 11px;
+    font-family: var(--font-ui);
+    font-size: var(--font-size-tab);
+    font-weight: 400;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -934,8 +971,9 @@
     border-radius: 14px;
     background: var(--omnibox-bg);
     color: var(--text-primary);
-    font-size: 11.5px;
-    font-weight: 600;
+    font-family: var(--font-ui);
+    font-size: var(--font-size-tab);
+    font-weight: 500;
     cursor: pointer;
     align-items: center;
     gap: 5px;
@@ -950,6 +988,242 @@
     width: 16px;
     height: 16px;
     fill: currentColor;
+  }
+
+  #overlay-scrim {
+    position: fixed;
+    top: 84px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0);
+    z-index: 90;
+    display: none;
+  }
+
+  #overlay-scrim.open {
+    display: block;
+  }
+
+  #omnibox-dropdown {
+    position: fixed;
+    display: none;
+    flex-direction: column;
+    z-index: 110;
+    background: var(--dropdown-bg);
+    border: 1.5px solid var(--dropdown-border);
+    border-top: 1px solid var(--divider);
+    border-radius: 0 0 16px 16px;
+    box-shadow: var(--dropdown-shadow);
+    padding: 4px 0 8px 0;
+    max-height: 360px;
+    overflow-y: auto;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 100ms ease;
+  }
+
+  #omnibox-dropdown.open {
+    display: flex;
+  }
+
+  #omnibox-dropdown.open.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .omnibox-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 14px;
+    min-height: 34px;
+    cursor: pointer;
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: var(--font-size-menu);
+    font-weight: 400;
+    line-height: 1.3;
+    border-left: 3px solid transparent;
+    transition: background-color 60ms ease;
+  }
+
+  .omnibox-item:hover {
+    background: var(--btn-hover);
+  }
+
+  .omnibox-item.focused,
+  .omnibox-item.selected {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border-left-color: var(--accent);
+  }
+
+  .omnibox-item-icon {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .omnibox-item-icon svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .omnibox-item-text {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .omnibox-item-title {
+    color: var(--text-primary);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .omnibox-item-sep {
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+
+  .omnibox-item-url {
+    color: var(--text-secondary);
+    font-size: var(--font-size-tab);
+    font-weight: 400;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #menu-dropdown {
+    position: fixed;
+    display: none;
+    flex-direction: column;
+    z-index: 115;
+    width: 248px;
+    background: var(--dropdown-bg);
+    border: 1px solid var(--dropdown-border);
+    border-radius: 12px;
+    box-shadow: var(--dropdown-shadow);
+    padding: 6px 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 100ms ease;
+  }
+
+  #menu-dropdown.open {
+    display: flex;
+  }
+
+  #menu-dropdown.open.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    height: 32px;
+    padding: 0 14px;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: var(--font-size-menu);
+    font-weight: 400;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .menu-item:hover {
+    background: var(--btn-hover);
+  }
+
+  .menu-item:active {
+    background: var(--btn-active);
+  }
+
+  .menu-shortcut {
+    color: var(--text-secondary);
+    font-size: var(--font-size-tab);
+    font-weight: 400;
+  }
+
+  .menu-divider {
+    height: 1px;
+    margin: 5px 0;
+    background: var(--divider);
+  }
+
+  .menu-zoom-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 34px;
+    padding: 0 14px;
+    color: var(--text-primary);
+    font-size: var(--font-size-menu);
+    font-weight: 400;
+  }
+
+  .menu-zoom-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .menu-zoom-btn {
+    width: 26px;
+    height: 24px;
+    border: 1px solid var(--toolbar-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-family: var(--font-ui);
+    font-size: var(--font-size-omnibox);
+    font-weight: 500;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .menu-zoom-btn:hover {
+    background: var(--btn-hover);
+  }
+
+  #menu-zoom-val {
+    min-width: 44px;
+    text-align: center;
+    font-size: var(--font-size-tab);
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+  }
+
+  #menu-zoom-val:hover {
+    background: var(--btn-hover);
+    color: var(--text-primary);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #omnibox-dropdown,
+    #menu-dropdown {
+      transition: none;
+    }
   }
 </style>
 </head>
@@ -1061,6 +1335,31 @@
     </div>
   </div>
 
+  <div id="overlay-scrim" aria-hidden="true"></div>
+  <div id="omnibox-dropdown" role="listbox" aria-label="Omnibox suggestions"></div>
+  <div id="menu-dropdown" role="menu" aria-label="Ember menu">
+    <button class="menu-item" data-menu-action="new_tab" role="menuitem"><span>New tab</span><span class="menu-shortcut">Ctrl+T</span></button>
+    <button class="menu-item" data-menu-action="new_window" role="menuitem"><span>New window</span><span class="menu-shortcut">Ctrl+N</span></button>
+    <div class="menu-divider"></div>
+    <div class="menu-zoom-row">
+      <span>Zoom</span>
+      <div class="menu-zoom-controls">
+        <button id="menu-zoom-out" class="menu-zoom-btn" type="button" title="Zoom out (Ctrl+-)" aria-label="Zoom out">-</button>
+        <span id="menu-zoom-val" title="Reset zoom (Ctrl+0)">100%</span>
+        <button id="menu-zoom-in" class="menu-zoom-btn" type="button" title="Zoom in (Ctrl++)" aria-label="Zoom in">+</button>
+      </div>
+    </div>
+    <div class="menu-divider"></div>
+    <button class="menu-item" data-menu-action="open_new_tab:ember://bookmarks" role="menuitem"><span>Bookmarks</span><span class="menu-shortcut">Ctrl+D</span></button>
+    <button class="menu-item" data-menu-action="open_new_tab:ember://history" role="menuitem"><span>History</span><span class="menu-shortcut">Ctrl+H</span></button>
+    <button class="menu-item" data-menu-action="open_downloads" role="menuitem"><span>Downloads</span><span class="menu-shortcut">Ctrl+J</span></button>
+    <div class="menu-divider"></div>
+    <button class="menu-item" data-menu-action="find" role="menuitem"><span>Find in page...</span><span class="menu-shortcut">Ctrl+F</span></button>
+    <button class="menu-item" data-menu-action="print" role="menuitem"><span>Print...</span><span class="menu-shortcut">Ctrl+P</span></button>
+    <div class="menu-divider"></div>
+    <button class="menu-item" data-menu-action="open_new_tab:ember://settings" role="menuitem"><span>Settings</span></button>
+  </div>
+
   <script>
     (function () {
       const GLOBE_SVG = '<svg viewBox="0 0 24 24" style="width:13px;height:13px"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>';
@@ -1092,38 +1391,344 @@
       const shieldBtn = document.getElementById("shield-btn");
       const shieldBadge = document.getElementById("shield-badge");
       const menuBtn = document.getElementById("menu-btn");
+      const overlayScrim = document.getElementById("overlay-scrim");
+      const omniboxDropdown = document.getElementById("omnibox-dropdown");
+      const menuDropdown = document.getElementById("menu-dropdown");
+      const menuZoomOut = document.getElementById("menu-zoom-out");
+      const menuZoomVal = document.getElementById("menu-zoom-val");
+      const menuZoomIn = document.getElementById("menu-zoom-in");
 
-      let activePopupKind = null;
+      function sendIpc(msg) {
+        if (window.ipc && typeof window.ipc.postMessage === "function") {
+          window.ipc.postMessage(msg);
+        }
+      }
 
-      window.openPopup = function (kind, anchorRect, data, anchorId, toggle) {
-        const rect = anchorRect || { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
-        activePopupKind = kind;
-        sendIpc("open_popup:" + JSON.stringify({
-          kind: kind,
-          anchorId: anchorId || kind,
-          toggle: Boolean(toggle),
-          anchor: {
-            left: rect.left,
-            top: rect.top,
-            right: rect.right,
-            bottom: rect.bottom,
-            width: rect.width,
-            height: rect.height
-          },
-          data: data || {}
-        }));
+      window.__uiJsErrors = window.__uiJsErrors || [];
+      function reportUiJsError(kind, message, stack) {
+        const entry = {
+          kind: String(kind || "error"),
+          message: String(message || "unknown error").slice(0, 600),
+          stack: String(stack || "").slice(0, 600)
+        };
+        window.__uiJsErrors.push(entry);
+        sendIpc("ui_js_error:" + JSON.stringify(entry));
+      }
+
+      window.addEventListener("error", function (event) {
+        const loc = event && event.filename
+          ? " (" + event.filename + ":" + event.lineno + ":" + event.colno + ")"
+          : "";
+        const msg = (event && event.message ? event.message : "Script error") + loc;
+        const stack = event && event.error && event.error.stack ? event.error.stack : "";
+        reportUiJsError("error", msg, stack);
+      });
+
+      window.addEventListener("unhandledrejection", function (event) {
+        const reason = event ? event.reason : null;
+        const msg = reason && reason.message
+          ? reason.message
+          : String(reason || "Unhandled promise rejection");
+        const stack = reason && reason.stack ? reason.stack : "";
+        reportUiJsError("unhandledrejection", msg, stack);
+      });
+
+      const origConsoleError = console.error;
+      console.error = function () {
+        try {
+          const parts = Array.prototype.slice.call(arguments).map(function (arg) {
+            if (arg instanceof Error) {
+              return arg.stack || arg.message;
+            }
+            if (typeof arg === "object" && arg !== null) {
+              try {
+                return JSON.stringify(arg);
+              } catch (_) {
+                return String(arg);
+              }
+            }
+            return String(arg);
+          });
+          reportUiJsError("console.error", parts.join(" "), "");
+        } catch (_) {}
+        return origConsoleError.apply(console, arguments);
       };
 
-      window.closePopup = function () {
-        if (activePopupKind !== null) {
-          activePopupKind = null;
-          sendIpc("close_popup");
+      function safeLocalStorageGet(key) {
+        try {
+          return window.localStorage ? window.localStorage.getItem(key) : null;
+        } catch (_) {
+          return null;
+        }
+      }
+
+      const uiModulesFailed = [];
+      function initUiModule(moduleName, fn) {
+        try {
+          fn();
+        } catch (err) {
+          const msg = err && err.message ? err.message : String(err);
+          console.error("[ui-init] module " + moduleName + " failed:", err);
+          uiModulesFailed.push(moduleName + ": " + msg);
+          sendIpc("ui_init_error:" + moduleName + ":" + msg);
+        }
+      }
+
+      let activePopupKind = null;
+      let overlayExpanded = false;
+      let overlayRevealTimer = null;
+
+      const omniboxWrapper = document.querySelector(".omnibox-wrapper");
+      const OMNIBOX_DEBOUNCE_MS = 50;
+      const OMNIBOX_WATCHDOG_MS = 300;
+      let omniboxQuerySeq = 0;
+      let lastAppliedOmniboxSeq = 0;
+      let cancelledBeforeSeq = 0;
+      let omniboxDebounceTimer = null;
+      let lastPopupInteractionAt = performance.now();
+      let omniboxItems = [];
+      let omniboxSelectedIdx = -1;
+      let omniboxTypedValue = "";
+      let omniboxIsComposing = false;
+      let omniboxLastInputWasDelete = false;
+      let omniboxAutofillActive = false;
+      let omniboxAutofillTyped = "";
+      let omniboxAutofillUrl = "";
+      let omniboxFocusSynced = false;
+
+      function ensureOmniboxFocusSynced() {
+        if (document.activeElement === omnibox && !omniboxFocusSynced) {
+          omniboxFocusSynced = true;
+          sendIpc("omnibox_focus");
+        }
+      }
+
+      function nextOmniboxQuerySeq() {
+        omniboxQuerySeq += 1;
+        return omniboxQuerySeq;
+      }
+
+      function clearAutofillState() {
+        omniboxAutofillActive = false;
+        omniboxAutofillTyped = "";
+        omniboxAutofillUrl = "";
+      }
+
+      function positionOmniboxDropdown() {
+        if (!omniboxWrapper || !omniboxDropdown) return;
+        const rect = omniboxWrapper.getBoundingClientRect();
+        omniboxDropdown.style.left = Math.round(rect.left) + "px";
+        omniboxDropdown.style.top = Math.round(rect.bottom - 1) + "px";
+        omniboxDropdown.style.width = Math.max(220, Math.round(rect.width)) + "px";
+      }
+
+      function positionMenuDropdown() {
+        if (!menuBtn || !menuDropdown) return;
+        const rect = menuBtn.getBoundingClientRect();
+        const rightGap = Math.max(8, Math.round(window.innerWidth - rect.right));
+        menuDropdown.style.top = Math.round(rect.bottom + 2) + "px";
+        menuDropdown.style.right = rightGap + "px";
+      }
+
+      function expandOverlay(kind) {
+        activePopupKind = kind;
+        if (overlayRevealTimer) {
+          clearTimeout(overlayRevealTimer);
+          overlayRevealTimer = null;
+        }
+        sendIpc("overlay_expand:" + kind);
+        sendIpc("overlay_visibility:1:" + kind);
+        // Fallback reveal in case chrome.html runs standalone without Rust IPC ACK
+        overlayRevealTimer = setTimeout(function () {
+          overlayRevealTimer = null;
+          if (activePopupKind === "omnibox") {
+            positionOmniboxDropdown();
+            omniboxDropdown.classList.add("visible");
+          } else if (activePopupKind === "menu") {
+            positionMenuDropdown();
+            menuDropdown.classList.add("visible");
+          }
+        }, 32);
+      }
+
+      function closeSuggestions(reason) {
+        const closeReason = String(reason || "explicit");
+        if (overlayRevealTimer) {
+          clearTimeout(overlayRevealTimer);
+          overlayRevealTimer = null;
+        }
+        omniboxItems = [];
+        omniboxSelectedIdx = -1;
+        clearAutofillState();
+        if (omniboxDebounceTimer) {
+          clearTimeout(omniboxDebounceTimer);
+          omniboxDebounceTimer = null;
+        }
+        cancelledBeforeSeq = Math.max(cancelledBeforeSeq, omniboxQuerySeq);
+        nextOmniboxQuerySeq();
+
+        if (omniboxDropdown) {
+          omniboxDropdown.classList.remove("visible", "open");
+          omniboxDropdown.replaceChildren();
+        }
+        if (menuDropdown) {
+          menuDropdown.classList.remove("visible", "open");
+        }
+        if (overlayScrim) {
+          overlayScrim.classList.remove("open");
+        }
+        if (omniboxWrapper) {
+          omniboxWrapper.classList.remove("dropdown-open");
+        }
+
+        const wasKind = activePopupKind;
+        activePopupKind = null;
+        overlayExpanded = false;
+
+        sendIpc("overlay_visibility:0:none");
+        sendIpc("overlay_shrink:" + closeReason);
+
+        if (wasKind !== null && typeof logPopupDebug === "function") {
+          logPopupDebug("close", "kind=" + wasKind + " reason=" + closeReason + " cancelledBeforeSeq=" + cancelledBeforeSeq);
+        }
+      }
+
+      function openMenuOverlay() {
+        if (activePopupKind === "omnibox") {
+          closeSuggestions("menu_open");
+        }
+        omniboxDropdown.classList.remove("visible", "open");
+        omniboxWrapper.classList.remove("dropdown-open");
+        if (menuZoomVal) {
+          menuZoomVal.textContent = (currentState.activeZoomPercent || 100) + "%";
+        }
+        positionMenuDropdown();
+        overlayScrim.classList.add("open");
+        menuDropdown.classList.add("open");
+        menuDropdown.classList.remove("visible");
+        expandOverlay("menu");
+      }
+
+      window.closeSuggestions = closeSuggestions;
+
+      window.__emberOnOverlayExpanded = function (kind) {
+        overlayExpanded = true;
+        if (overlayRevealTimer) {
+          clearTimeout(overlayRevealTimer);
+          overlayRevealTimer = null;
+        }
+        if (typeof window.__overlayTransitionHook === "function") {
+          window.__overlayTransitionHook();
+        }
+        if (activePopupKind !== kind) return;
+        requestAnimationFrame(function () {
+          if (activePopupKind === "omnibox") {
+            positionOmniboxDropdown();
+            omniboxDropdown.classList.add("visible");
+          } else if (activePopupKind === "menu") {
+            positionMenuDropdown();
+            menuDropdown.classList.add("visible");
+          }
+        });
+      };
+
+      window.__emberOnOverlayCollapsed = function () {
+        overlayExpanded = false;
+        if (typeof window.__overlayTransitionHook === "function") {
+          window.__overlayTransitionHook();
         }
       };
 
-      window.__emberOnPopupClosed = function () {
-        activePopupKind = null;
-      };
+      initUiModule("popup_client", function () {
+        window.openPopup = function (kind) {
+          if (kind === "menu") {
+            if (activePopupKind === "menu") {
+              closeSuggestions("scrim_click");
+            } else {
+              openMenuOverlay();
+            }
+          }
+        };
+
+        window.closePopup = function (reason) {
+          closeSuggestions(reason || "close_popup");
+        };
+
+        window.__emberOnPopupClosed = function () {
+          closeSuggestions("host_closed");
+        };
+
+        overlayScrim.addEventListener("pointerdown", function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          closeSuggestions("scrim_click");
+        });
+
+        document.addEventListener("pointerdown", function (e) {
+          if (activePopupKind === null) return;
+          if (e.target === overlayScrim) return;
+          if (menuDropdown.contains(e.target) || menuBtn.contains(e.target)) return;
+          if (activePopupKind === "omnibox" && (omniboxWrapper.contains(e.target) || omniboxDropdown.contains(e.target))) {
+            return;
+          }
+          if (e.target.closest(".tab, #new-tab-btn")) {
+            closeSuggestions("tab_switch");
+            return;
+          }
+          if (e.target.closest("#back-btn, #forward-btn, #reload-btn")) {
+            closeSuggestions("navigation_start");
+            return;
+          }
+          closeSuggestions("scrim_click");
+        }, true);
+
+        menuDropdown.addEventListener("mousedown", function (e) {
+          e.preventDefault();
+        });
+
+        menuDropdown.addEventListener("click", function (e) {
+          if (e.target === menuZoomOut) {
+            e.stopPropagation();
+            sendIpc("zoom_out");
+            return;
+          }
+          if (e.target === menuZoomIn) {
+            e.stopPropagation();
+            sendIpc("zoom_in");
+            return;
+          }
+          if (e.target === menuZoomVal) {
+            e.stopPropagation();
+            sendIpc("zoom_reset");
+            return;
+          }
+          const item = e.target.closest("[data-menu-action]");
+          if (!item) return;
+          const action = item.dataset.menuAction;
+          closeSuggestions("menu_action");
+          if (action === "find") {
+            if (typeof window.__emberOpenFind === "function") {
+              window.__emberOpenFind();
+            }
+          } else if (action) {
+            sendIpc(action);
+          }
+        });
+
+        window.addEventListener("blur", function () {
+          if (activePopupKind !== null) {
+            closeSuggestions("window_blur");
+          }
+        });
+
+        window.addEventListener("resize", function () {
+          if (activePopupKind === "omnibox") {
+            positionOmniboxDropdown();
+          } else if (activePopupKind === "menu") {
+            positionMenuDropdown();
+          }
+        });
+      });
 
       let currentState = {
         activeTabId: 0,
@@ -1149,13 +1754,8 @@
       let snapShowTimer = null;
       let snapHideTimer = null;
 
-      function sendIpc(msg) {
-        if (window.ipc && typeof window.ipc.postMessage === "function") {
-          window.ipc.postMessage(msg);
-        }
-      }
-
-      // Top-edge resize strip for the custom titlebar (disabled when maximized)
+      initUiModule("toolbar", function () {
+        // Top-edge resize strip for the custom titlebar (disabled when maximized)
       function topEdgeResizeDir(e) {
         if (currentState && currentState.isMaximized) return null;
         if (e.clientY > 5) return null;
@@ -1250,19 +1850,23 @@
       });
 
       newTabBtn.addEventListener("click", function () {
+        if (activePopupKind !== null) closeSuggestions("tab_switch");
         frozenTabWidth = null;
         sendIpc("new_tab");
       });
 
       backBtn.addEventListener("click", function () {
+        if (activePopupKind !== null) closeSuggestions("navigation_start");
         sendIpc("back");
       });
 
       forwardBtn.addEventListener("click", function () {
+        if (activePopupKind !== null) closeSuggestions("navigation_start");
         sendIpc("forward");
       });
 
       reloadBtn.addEventListener("click", function () {
+        if (activePopupKind !== null) closeSuggestions("navigation_start");
         sendIpc("reload");
       });
 
@@ -1312,17 +1916,12 @@
 
       menuBtn.addEventListener("click", function (e) {
         e.stopPropagation();
-        const rect = menuBtn.getBoundingClientRect();
-        window.openPopup("menu", rect, {
-          zoomPercent: currentState.activeZoomPercent || 100
-        }, "menu-btn", true);
-      });
-
-      document.addEventListener("pointerdown", function (e) {
-        if (activePopupKind !== null && !menuBtn.contains(e.target) && e.target !== omnibox) {
-          window.closePopup();
+        if (activePopupKind === "menu") {
+          closeSuggestions("scrim_click");
+          return;
         }
-      }, true);
+        openMenuOverlay();
+      });
 
       shieldBtn.addEventListener("click", function () {
         sendIpc("toggle_site_allowlist");
@@ -1332,44 +1931,17 @@
         e.preventDefault();
         sendIpc("toggle_adblock");
       });
-
-      const omniboxWrapper = document.querySelector(".omnibox-wrapper");
-      const OMNIBOX_DEBOUNCE_MS = 50;
-      const OMNIBOX_WATCHDOG_MS = 300;
-      let omniboxQuerySeq = 0;
-      let lastAppliedOmniboxSeq = 0;
-      let cancelledBeforeSeq = 0;
-      let omniboxDebounceTimer = null;
-      let lastPopupInteractionAt = performance.now();
-      let omniboxItems = [];
-      let omniboxSelectedIdx = -1;
-      let omniboxTypedValue = "";
-      let omniboxIsComposing = false;
-      let omniboxLastInputWasDelete = false;
-      let omniboxAutofillActive = false;
-      let omniboxAutofillTyped = "";
-      let omniboxAutofillUrl = "";
+      });
 
       function isPopupDebug() {
         return window.__EMBER_POPUP_DEBUG === true
-          || localStorage.getItem("ember_popup_debug") === "1";
+          || safeLocalStorageGet("ember_popup_debug") === "1";
       }
 
       function logPopupDebug(kind, detail) {
         if (isPopupDebug()) {
           console.log("[omnibox-popup] t=" + performance.now().toFixed(1) + "ms " + kind + (detail ? " " + detail : ""));
         }
-      }
-
-      function nextOmniboxQuerySeq() {
-        omniboxQuerySeq += 1;
-        return omniboxQuerySeq;
-      }
-
-      function clearAutofillState() {
-        omniboxAutofillActive = false;
-        omniboxAutofillTyped = "";
-        omniboxAutofillUrl = "";
       }
 
       function hasAutofillSuffixSelected() {
@@ -1395,19 +1967,76 @@
         clearAutofillState();
       }
 
-      function closeOmniboxPopup() {
-        omniboxItems = [];
-        omniboxSelectedIdx = -1;
-        clearAutofillState();
-        if (omniboxDebounceTimer) {
-          clearTimeout(omniboxDebounceTimer);
-          omniboxDebounceTimer = null;
+      function closeOmniboxPopup(reason) {
+        closeSuggestions(reason || "omnibox_close");
+      }
+
+      function suggestionIconMarkup(kind) {
+        if (kind === "search") {
+          return '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>';
         }
-        cancelledBeforeSeq = Math.max(cancelledBeforeSeq, omniboxQuerySeq);
-        nextOmniboxQuerySeq();
-        logPopupDebug("close", "cancelledBeforeSeq=" + cancelledBeforeSeq);
-        if (activePopupKind === "omnibox") {
-          window.closePopup();
+        if (kind === "bookmark") {
+          return '<svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
+        }
+        if (kind === "history") {
+          return '<svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A8.96 8.96 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>';
+        }
+        return GLOBE_SVG;
+      }
+
+      function renderOmniboxSuggestions(items, selectedIdx) {
+        const frag = document.createDocumentFragment();
+        for (let i = 0; i < items.length; i += 1) {
+          const item = items[i] || {};
+          const row = document.createElement("div");
+          row.className = "omnibox-item";
+          if (item.isDefault) row.classList.add("default-match");
+          if (i === selectedIdx) row.classList.add("focused", "selected");
+          row.dataset.idx = String(i);
+          row.setAttribute("role", "option");
+          row.setAttribute("aria-selected", i === selectedIdx ? "true" : "false");
+
+          const icon = document.createElement("span");
+          icon.className = "omnibox-item-icon";
+          icon.innerHTML = suggestionIconMarkup(item.kind);
+          row.appendChild(icon);
+
+          const textWrap = document.createElement("div");
+          textWrap.className = "omnibox-item-text";
+
+          const titleEl = document.createElement("span");
+          titleEl.className = "omnibox-item-title";
+          titleEl.textContent = String(item.title || item.url || "");
+          textWrap.appendChild(titleEl);
+
+          if (item.kind !== "search" && item.url) {
+            const sep = document.createElement("span");
+            sep.className = "omnibox-item-sep";
+            sep.textContent = "—";
+            textWrap.appendChild(sep);
+
+            const urlEl = document.createElement("span");
+            urlEl.className = "omnibox-item-url";
+            urlEl.textContent = String(item.url);
+            textWrap.appendChild(urlEl);
+          }
+
+          row.appendChild(textWrap);
+          frag.appendChild(row);
+        }
+        omniboxDropdown.replaceChildren(frag);
+      }
+
+      function updateOmniboxSelectionVisual() {
+        const rows = omniboxDropdown.querySelectorAll(".omnibox-item");
+        for (let i = 0; i < rows.length; i += 1) {
+          const isSel = i === omniboxSelectedIdx;
+          rows[i].classList.toggle("focused", isSel);
+          rows[i].classList.toggle("selected", isSel);
+          rows[i].setAttribute("aria-selected", isSel ? "true" : "false");
+        }
+        if (omniboxSelectedIdx >= 0 && rows[omniboxSelectedIdx]) {
+          rows[omniboxSelectedIdx].scrollIntoView({ block: "nearest" });
         }
       }
 
@@ -1417,7 +2046,7 @@
           omniboxDebounceTimer = null;
         }
         if (raw.trim().length === 0) {
-          closeOmniboxPopup();
+          closeSuggestions("empty_input");
           return;
         }
         lastPopupInteractionAt = performance.now();
@@ -1432,36 +2061,66 @@
           omniboxDebounceTimer = null;
         }
         if (raw.trim().length === 0) {
-          closeOmniboxPopup();
+          closeSuggestions("empty_input");
           return;
         }
         lastPopupInteractionAt = performance.now();
+        logPopupDebug("debounce", "raw=" + JSON.stringify(raw) + " allowAutofill=" + allowAutofill);
         omniboxDebounceTimer = setTimeout(function () {
           omniboxDebounceTimer = null;
           dispatchOmniboxQuery(raw, allowAutofill);
         }, OMNIBOX_DEBOUNCE_MS);
       }
 
+      initUiModule("omnibox", function () {
       setInterval(function () {
         if (activePopupKind === "omnibox") {
           const unfocused = !document.hasFocus() || document.activeElement !== omnibox;
           if (unfocused && performance.now() - lastPopupInteractionAt >= OMNIBOX_WATCHDOG_MS) {
             console.warn("[omnibox-watchdog] force-closed stale omnibox popup");
-            closeOmniboxPopup();
+            closeSuggestions("omnibox_blur");
           }
         }
       }, 100);
 
+      omniboxDropdown.addEventListener("mousedown", function (e) {
+        // Keep omnibox focus while clicking a suggestion so blur doesn't pre-empt the click
+        e.preventDefault();
+      });
+
+      omniboxDropdown.addEventListener("click", function (e) {
+        const row = e.target.closest(".omnibox-item");
+        if (!row) return;
+        const idx = Number(row.dataset.idx);
+        const item = omniboxItems[idx];
+        if (!item || !item.url) return;
+        const targetUrl = item.url;
+        omnibox.value = item.kind === "search" ? (item.title || targetUrl) : targetUrl;
+        closeSuggestions("suggestion_click");
+        sendIpc("navigate:" + targetUrl);
+        omnibox.blur();
+      });
+
       window.__emberShowOmniboxSuggestions = function (queryId, items, autofill) {
+        if (Array.isArray(queryId)) {
+          autofill = null;
+          items = queryId;
+          queryId = omniboxQuerySeq;
+        }
         const ordered = queryId >= lastAppliedOmniboxSeq
           && queryId > cancelledBeforeSeq
           && queryId === omniboxQuerySeq;
         if (!ordered || document.activeElement !== omnibox) {
           logPopupDebug("drop-stale", "seq=" + queryId + " latest=" + omniboxQuerySeq + " cancelledBefore=" + cancelledBeforeSeq);
+          if (activePopupKind === null) {
+            sendIpc("overlay_visibility:0:none");
+            sendIpc("overlay_shrink:stale_drop");
+          }
           return;
         }
         lastAppliedOmniboxSeq = queryId;
         lastPopupInteractionAt = performance.now();
+        ensureOmniboxFocusSynced();
         logPopupDebug("response", "seq=" + queryId + " count=" + (Array.isArray(items) ? items.length : 0));
 
         if (
@@ -1485,17 +2144,27 @@
         omniboxItems = Array.isArray(items) ? items : [];
         omniboxSelectedIdx = -1;
         if (omniboxItems.length === 0) {
-          if (activePopupKind === "omnibox") {
-            window.closePopup();
-          }
+          closeSuggestions("empty_input");
           return;
         }
-        const rect = omniboxWrapper.getBoundingClientRect();
-        window.openPopup("omnibox", rect, {
-          count: omniboxItems.length,
-          items: omniboxItems,
-          selectedIndex: -1
-        }, "omnibox", false);
+
+        const alreadyOpen = activePopupKind === "omnibox" && omniboxDropdown.classList.contains("visible");
+        renderOmniboxSuggestions(omniboxItems, omniboxSelectedIdx);
+        positionOmniboxDropdown();
+        omniboxWrapper.classList.add("dropdown-open");
+        menuDropdown.classList.remove("visible", "open");
+        overlayScrim.classList.add("open");
+        omniboxDropdown.classList.add("open");
+
+        logPopupDebug("popup-open", "seq=" + queryId + " count=" + omniboxItems.length + " inPlace=" + alreadyOpen);
+        if (alreadyOpen) {
+          activePopupKind = "omnibox";
+          omniboxDropdown.classList.add("visible");
+          sendIpc("overlay_visibility:1:omnibox");
+        } else {
+          omniboxDropdown.classList.remove("visible");
+          expandOverlay("omnibox");
+        }
       };
 
       omnibox.addEventListener("focus", function () {
@@ -1503,15 +2172,17 @@
         omniboxTypedValue = omnibox.value;
         lastPopupInteractionAt = performance.now();
         clearAutofillState();
+        omniboxFocusSynced = true;
+        sendIpc("omnibox_focus");
       });
 
       omnibox.addEventListener("blur", function () {
         clearAutofillState();
-        setTimeout(function () {
-          if ((!document.hasFocus() || document.activeElement !== omnibox) && activePopupKind === "omnibox") {
-            closeOmniboxPopup();
-          }
-        }, 120);
+        omniboxFocusSynced = false;
+        sendIpc("omnibox_blur");
+        if (activePopupKind === "omnibox") {
+          closeSuggestions("omnibox_blur");
+        }
       });
 
       omnibox.addEventListener("compositionstart", function () {
@@ -1570,7 +2241,7 @@
           omniboxSelectedIdx = (omniboxSelectedIdx + 1) % omniboxItems.length;
           const chosen = omniboxItems[omniboxSelectedIdx];
           omnibox.value = chosen.kind === "search" ? chosen.title : chosen.url;
-          sendIpc("omnibox_select:" + omniboxSelectedIdx);
+          updateOmniboxSelectionVisual();
           return;
         }
         if (e.key === "ArrowUp" && omniboxItems.length > 0) {
@@ -1581,7 +2252,7 @@
             : omniboxSelectedIdx - 1;
           const chosen = omniboxItems[omniboxSelectedIdx];
           omnibox.value = chosen.kind === "search" ? chosen.title : chosen.url;
-          sendIpc("omnibox_select:" + omniboxSelectedIdx);
+          updateOmniboxSelectionVisual();
           return;
         }
         if (e.key === "Enter") {
@@ -1592,7 +2263,7 @@
           } else if (hasAutofillSuffixSelected() && omniboxAutofillUrl) {
             target = omniboxAutofillUrl;
           }
-          closeOmniboxPopup();
+          closeSuggestions("enter");
           if (target.length > 0) {
             sendIpc("navigate:" + target);
             omnibox.blur();
@@ -1606,7 +2277,7 @@
           if (activePopupKind === "omnibox") {
             e.preventDefault();
             omnibox.value = omniboxTypedValue;
-            closeOmniboxPopup();
+            closeSuggestions("escape");
             return;
           }
           const active = currentState.tabs.find(function (t) {
@@ -1618,25 +2289,40 @@
           omnibox.blur();
         }
       });
+      });
 
       window.addEventListener("keydown", function (e) {
         const key = (e.key || "").toLowerCase();
         const mod = e.ctrlKey || e.metaKey;
 
+        if (e.key === "Escape" && activePopupKind !== null) {
+          e.preventDefault();
+          closeSuggestions("escape");
+          return;
+        }
+
         if (e.altKey && !mod && !e.shiftKey) {
           if (e.key === "ArrowLeft") {
             e.preventDefault();
+            if (activePopupKind !== null) closeSuggestions("navigation_start");
             sendIpc("back");
             return;
           } else if (e.key === "ArrowRight") {
             e.preventDefault();
+            if (activePopupKind !== null) closeSuggestions("navigation_start");
             sendIpc("forward");
             return;
           }
         }
 
+        if (e.key === "F12" || ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "I" || e.key === "i"))) {
+          e.preventDefault();
+          sendIpc("open_ui_devtools");
+          return;
+        }
         if (e.key === "F5") {
           e.preventDefault();
+          if (activePopupKind !== null) closeSuggestions("navigation_start");
           sendIpc("reload");
           return;
         }
@@ -1645,21 +2331,26 @@
 
         if (e.key === "Tab") {
           e.preventDefault();
+          if (activePopupKind !== null) closeSuggestions("tab_switch");
           sendIpc(e.shiftKey ? "prev_tab" : "next_tab");
         } else if (e.shiftKey && key === "t") {
           e.preventDefault();
+          if (activePopupKind !== null) closeSuggestions("tab_switch");
           sendIpc("reopen_closed_tab");
         } else if (!e.shiftKey && key === "t") {
           e.preventDefault();
+          if (activePopupKind !== null) closeSuggestions("tab_switch");
           frozenTabWidth = null;
           sendIpc("new_tab");
         } else if (!e.shiftKey && key === "w") {
           e.preventDefault();
+          if (activePopupKind !== null) closeSuggestions("tab_switch");
           if (currentState.activeTabId) {
             closeTabOptimistically(currentState.activeTabId, false);
           }
         } else if (!e.shiftKey && key === "r") {
           e.preventDefault();
+          if (activePopupKind !== null) closeSuggestions("navigation_start");
           sendIpc("reload");
         } else if (!e.shiftKey && key === "l") {
           e.preventDefault();
@@ -1682,9 +2373,16 @@
           sendIpc("zoom_reset");
         } else if (!e.shiftKey && e.key >= "1" && e.key <= "9") {
           e.preventDefault();
+          if (activePopupKind !== null) closeSuggestions("tab_switch");
           sendIpc("switch_tab_index:" + e.key);
         }
       });
+
+      window.addEventListener("wheel", function (e) {
+        if (e.ctrlKey) {
+          e.preventDefault();
+        }
+      }, { passive: false });
 
       function updateMaximizeIcon(isMaximized) {
         if (isMaximized) {
@@ -1834,12 +2532,14 @@
       let lastAppliedRevision = 0;
       const MAX_CLOSING_MS = 500;
       let frozenTabWidth = null;
+      let isFirstTabSnapshot = true;
       const tabFlipAnims = new Map();
+      const tabOpenAnims = new Map();
 
       function isTabAnimDebug() {
         return window.__EMBER_TAB_ANIM_DEBUG === true
           || /[?&]tabAnimDebug=1/.test(location.search)
-          || localStorage.getItem("ember_tab_anim_debug") === "1";
+          || safeLocalStorageGet("ember_tab_anim_debug") === "1";
       }
 
       function logTabAnim(kind, tabId, detail) {
@@ -1851,6 +2551,28 @@
       function isReducedMotion() {
         return !currentState.tabAnimationsEnabled
           || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      }
+
+      function getTabAnimDurationMs() {
+        if (isReducedMotion()) {
+          return 0;
+        }
+        try {
+          const raw = getComputedStyle(document.documentElement)
+            .getPropertyValue("--tab-anim-duration")
+            .trim();
+          if (raw.endsWith("ms")) {
+            const val = parseFloat(raw.slice(0, -2));
+            if (!isNaN(val) && val >= 0) return val;
+          } else if (raw.endsWith("s")) {
+            const val = parseFloat(raw.slice(0, -1));
+            if (!isNaN(val) && val >= 0) return Math.round(val * 1000);
+          } else if (raw !== "") {
+            const val = parseFloat(raw);
+            if (!isNaN(val) && val >= 0) return val;
+          }
+        } catch (_) {}
+        return TAB_ANIM_DURATION;
       }
 
       // Single pure layout owner: computes integer pixel left and width for every tab.
@@ -1884,7 +2606,34 @@
         return false;
       }
 
+      function cancelOpenAnim(tabId, reason) {
+        const rec = tabOpenAnims.get(tabId);
+        if (!rec) return false;
+        tabOpenAnims.delete(tabId);
+        if (rec.rafId !== null && typeof cancelAnimationFrame === "function") {
+          cancelAnimationFrame(rec.rafId);
+          rec.rafId = null;
+        }
+        if (rec.anim) {
+          rec.anim.oncancel = null;
+          try {
+            if (rec.anim.playState === "running" || rec.anim.playState === "pending") {
+              rec.anim.cancel();
+            }
+          } catch (_) {}
+        }
+        if (rec.el) {
+          rec.el.classList.remove("tab-opening", "animating");
+          rec.el.style.willChange = "";
+        }
+        if (reason) {
+          logTabAnim("retarget", tabId, reason);
+        }
+        return true;
+      }
+
       function removeNode(tabId) {
+        cancelOpenAnim(tabId);
         const rec = closingNodes.get(tabId);
         if (!rec) return;
         closingNodes.delete(tabId);
@@ -1900,6 +2649,7 @@
           } catch (_) {}
         }
         if (rec.el) {
+          rec.el.classList.remove("animating");
           rec.el.style.willChange = "";
           if (rec.el.parentNode) {
             rec.el.remove();
@@ -1922,7 +2672,13 @@
           removeNode(id);
         });
 
-        if (closingNodes.size === 0 && tabFlipAnims.size === 0 && tabsContainer) {
+        tabOpenAnims.forEach(function (_rec, id) {
+          if (!latestSnapshotIds.has(id)) {
+            cancelOpenAnim(id, "sweep-orphan-open");
+          }
+        });
+
+        if (closingNodes.size === 0 && tabFlipAnims.size === 0 && tabOpenAnims.size === 0 && tabsContainer) {
           tabsContainer.querySelectorAll(".tab").forEach(function (el) {
             const id = parseInt(el.dataset.tabId, 10);
             const expected = !isNaN(id) && latestSnapshotIds.has(id) && tabNodeMap.get(id) === el;
@@ -1939,20 +2695,48 @@
         }
       }
 
-      setInterval(function () {
-        sweepGhostTabs("idle-1s");
-      }, 1000);
-
       function startClosingAnimation(tabEl, tabId, startWidth) {
+        let startOpacity = 1;
+        try {
+          const computedOpacity = parseFloat(getComputedStyle(tabEl).opacity);
+          if (!isNaN(computedOpacity)) {
+            startOpacity = Math.max(0, Math.min(1, computedOpacity));
+          }
+        } catch (_) {
+          const inlineOpacity = parseFloat(tabEl.style.opacity);
+          if (!isNaN(inlineOpacity)) {
+            startOpacity = Math.max(0, Math.min(1, inlineOpacity));
+          }
+        }
+
+        let liveWidth = startWidth;
+        if (!(liveWidth > 0)) {
+          try {
+            liveWidth = tabEl.getBoundingClientRect().width;
+          } catch (_) {}
+        }
+        if (!(liveWidth > 0)) {
+          const parsedWidth = parseFloat(tabEl.style.width);
+          if (!isNaN(parsedWidth)) {
+            liveWidth = parsedWidth;
+          }
+        }
+
+        cancelOpenAnim(tabId, "closing");
         cancelFlipAnim(tabId, "closing");
         if (closingNodes.has(tabId)) {
           removeNode(tabId);
         }
-        tabEl.classList.add("tab-closing");
+        tabEl.classList.add("tab-closing", "animating");
+        tabEl.classList.remove("tab-opening");
         tabEl.style.pointerEvents = "none";
         tabEl.draggable = false;
 
-        if (isReducedMotion() || typeof tabEl.animate !== "function") {
+        const duration = getTabAnimDurationMs();
+        const w = Math.max(0, Math.round(liveWidth || 0));
+
+        if (isReducedMotion() || duration <= 0 || typeof tabEl.animate !== "function" || (w <= 0 && startOpacity <= 0)) {
+          tabEl.classList.remove("animating");
           tabEl.style.willChange = "";
           if (tabEl.parentNode) {
             tabEl.remove();
@@ -1962,23 +2746,23 @@
           return;
         }
 
-        const w = Math.max(0, Math.round(startWidth));
         tabEl.style.willChange = "width, opacity";
-        logTabAnim("start", tabId, "close from=" + w + "px");
+        logTabAnim("start", tabId, "close from=" + w + "px opacity=" + startOpacity.toFixed(2));
         const anim = tabEl.animate(
           [
-            { width: w + "px", opacity: 1 },
+            { width: w + "px", opacity: startOpacity },
             { width: "0px", opacity: 0 }
           ],
           {
-            duration: TAB_ANIM_DURATION,
+            duration: duration,
             easing: "cubic-bezier(0.2, 0, 0, 1)",
             fill: "forwards"
           }
         );
+        const fallbackMs = Math.max(0, Math.min(duration + 50, MAX_CLOSING_MS));
         const timerId = setTimeout(function () {
           removeNode(tabId);
-        }, TAB_ANIM_DURATION + 50);
+        }, fallbackMs);
 
         closingNodes.set(tabId, {
           el: tabEl,
@@ -1997,6 +2781,9 @@
       }
 
       function closeTabOptimistically(tabId, isMouse) {
+        if (activePopupKind !== null) {
+          closeSuggestions("tab_switch");
+        }
         const tabEl = tabNodeMap.get(tabId);
         const tabWidthNow = tabEl ? Math.round(tabEl.getBoundingClientRect().width) : 0;
 
@@ -2171,6 +2958,7 @@
               activeDrag.isDragging = true;
               tabEl.classList.add("dragging", "animating");
               if (tab.id !== currentState.activeTabId) {
+                if (activePopupKind !== null) closeSuggestions("tab_switch");
                 sendIpc("switch_tab:" + tab.id);
               }
             }
@@ -2194,8 +2982,10 @@
           if (!activeDrag.isDragging) {
             if (e.type === "pointerup" && e.button === 0 && !e.target.closest(".tab-close")) {
               if (e.altKey && tab.id !== currentState.activeTabId) {
+                if (activePopupKind !== null) closeSuggestions("tab_switch");
                 sendIpc("suspend_tab:" + tab.id);
               } else if (tab.id !== currentState.activeTabId) {
+                if (activePopupKind !== null) closeSuggestions("tab_switch");
                 sendIpc("switch_tab:" + tab.id);
               }
             }
@@ -2278,9 +3068,11 @@
 
       function animateTabFlip(tabEl, tabId, prevLeft, nextLeft) {
         const dx = Math.round(prevLeft - nextLeft);
-        if (dx === 0 || isReducedMotion() || typeof tabEl.animate !== "function" || (activeDrag && activeDrag.isDragging)) {
+        const duration = getTabAnimDurationMs();
+        if (dx === 0 || duration <= 0 || isReducedMotion() || typeof tabEl.animate !== "function" || (activeDrag && activeDrag.isDragging)) {
           return;
         }
+        tabEl.classList.add("animating");
         tabEl.style.willChange = "transform";
         logTabAnim("start", tabId, "flip dx=" + dx + "px");
         const anim = tabEl.animate(
@@ -2289,7 +3081,7 @@
             { transform: "translate3d(0px, 0, 0)" }
           ],
           {
-            duration: TAB_ANIM_DURATION,
+            duration: duration,
             easing: "cubic-bezier(0.2, 0, 0, 1)"
           }
         );
@@ -2297,8 +3089,12 @@
         function cleanup() {
           if (tabFlipAnims.get(tabId) === anim) {
             tabFlipAnims.delete(tabId);
+            if (!tabOpenAnims.has(tabId)) {
+              tabEl.classList.remove("animating");
+            }
             tabEl.style.willChange = "";
             logTabAnim("finish", tabId, "flip");
+            sweepGhostTabs("flip-finish");
           }
         }
         anim.finished.then(cleanup, cleanup);
@@ -2307,17 +3103,37 @@
       function renderTabs() {
         if (!currentState || !currentState.tabs) return;
 
+        const isInitialOrRestore = isFirstTabSnapshot || Boolean(currentState.suppressTabAnimation);
+        if (currentState.tabs.length > 0) {
+          isFirstTabSnapshot = false;
+        }
+        const animDuration = getTabAnimDurationMs();
+        const animateSnapshot = !isInitialOrRestore && animDuration > 0 && !isReducedMotion() && !(activeDrag && activeDrag.isDragging);
+
         // Phase 1: Batched reads before any DOM writes or animation cancellations
         const stripWidth = getAvailableStripWidth();
         const layout = computeTabStripLayout(currentState.tabs, stripWidth, frozenTabWidth);
         const targetWidth = layout.width;
+        const slotById = new Map();
+        layout.slots.forEach(function (s) {
+          slotById.set(s.id, s);
+        });
 
         const prevLefts = new Map();
         const prevWidths = new Map();
         tabNodeMap.forEach(function (el, id) {
           const rect = el.getBoundingClientRect();
-          prevLefts.set(id, Math.round(rect.left));
-          prevWidths.set(id, Math.round(rect.width));
+          const hasLiveRect = rect.width > 0 || el.style.width === "0px" || el.classList.contains("tab-opening");
+          if (hasLiveRect) {
+            prevLefts.set(id, Math.round(rect.left));
+            prevWidths.set(id, Math.round(rect.width));
+          } else {
+            const parsedWidth = parseFloat(el.style.width);
+            const fallbackSlot = slotById.get(id);
+            const fallbackLeft = parseFloat(el.style.left);
+            prevLefts.set(id, Math.round(!isNaN(fallbackLeft) ? fallbackLeft : (fallbackSlot ? fallbackSlot.left : 0)));
+            prevWidths.set(id, Math.round(!isNaN(parsedWidth) ? parsedWidth : (fallbackSlot ? fallbackSlot.width : targetWidth)));
+          }
         });
 
         const activeIds = new Set(currentState.tabs.map(function (t) { return t.id; }));
@@ -2353,7 +3169,7 @@
 
         // Phase 3: Batched DOM writes (no layout reads in this loop)
         const tabElementsByIndex = [];
-        const newTabEls = [];
+        const newTabEntries = [];
 
         currentState.tabs.forEach(function (tab) {
           let tabEl = tabNodeMap.get(tab.id);
@@ -2383,19 +3199,31 @@
               }
             }
 
-            tabEl.style.width = targetWidth + "px";
-            tabEl.style.opacity = "1";
+            const pendingOpen = tabOpenAnims.get(tab.id);
+            if (pendingOpen && !pendingOpen.anim) {
+              pendingOpen.targetWidth = targetWidth;
+            } else {
+              tabEl.style.width = targetWidth + "px";
+              tabEl.style.opacity = "1";
+            }
             applyTabVisibility(tabEl, targetWidth, isActive);
             tabElementsByIndex.push({ id: tab.id, el: tabEl, isNew: false });
           } else {
             tabEl = createTabElement(tab, targetWidth);
             tabEl.dataset.loading = tab.loading ? "true" : "false";
             tabEl.dataset.favicon = tab.favicon || "";
-            tabEl.style.width = targetWidth + "px";
-            tabEl.style.opacity = "1";
+            if (animateSnapshot && typeof tabEl.animate === "function") {
+              // Create new tab collapsed first, then expand in the next animation frame.
+              tabEl.style.width = "0px";
+              tabEl.style.opacity = "0";
+              tabEl.classList.add("tab-opening", "animating");
+            } else {
+              tabEl.style.width = targetWidth + "px";
+              tabEl.style.opacity = "1";
+            }
             applyTabVisibility(tabEl, targetWidth, isActive);
             tabNodeMap.set(tab.id, tabEl);
-            newTabEls.push({ id: tab.id, el: tabEl });
+            newTabEntries.push({ id: tab.id, el: tabEl, targetWidth: targetWidth });
             tabElementsByIndex.push({ id: tab.id, el: tabEl, isNew: true });
           }
         });
@@ -2419,43 +3247,112 @@
           nextSurvivingEl = el;
         }
 
-        // Phase 4: Batched read of final positions, then start WAAPI FLIP & open animations
-        const nextLefts = new Map();
-        tabElementsByIndex.forEach(function (item) {
-          if (!item.isNew && prevLefts.has(item.id)) {
-            nextLefts.set(item.id, Math.round(item.el.getBoundingClientRect().left));
-          }
-        });
+        // Phase 4: Batched read of final positions, then start WAAPI FLIP & next-frame open animations
+        const reduceMotion = isReducedMotion();
+        if (animateSnapshot) {
+          const nextLefts = new Map();
+          tabElementsByIndex.forEach(function (item) {
+            if (!item.isNew && prevLefts.has(item.id)) {
+              const rect = item.el.getBoundingClientRect();
+              const hasLiveRect = rect.width > 0 || item.el.style.width === "0px" || item.el.classList.contains("tab-opening");
+              if (hasLiveRect) {
+                nextLefts.set(item.id, Math.round(rect.left));
+              } else {
+                const slot = slotById.get(item.id);
+                nextLefts.set(item.id, slot ? slot.left : 0);
+              }
+            }
+          });
 
-        tabElementsByIndex.forEach(function (item) {
-          if (!item.isNew && prevLefts.has(item.id) && nextLefts.has(item.id)) {
-            animateTabFlip(item.el, item.id, prevLefts.get(item.id), nextLefts.get(item.id));
-          }
-        });
+          tabElementsByIndex.forEach(function (item) {
+            if (!item.isNew && prevLefts.has(item.id) && nextLefts.has(item.id)) {
+              animateTabFlip(item.el, item.id, prevLefts.get(item.id), nextLefts.get(item.id));
+            }
+          });
+        }
 
-        if (newTabEls.length > 0) {
-          const reduceMotion = isReducedMotion();
-          newTabEls.forEach(function (item) {
+        if (newTabEntries.length > 0) {
+          newTabEntries.forEach(function (item) {
             const el = item.el;
-            if (!reduceMotion && typeof el.animate === "function") {
-              el.style.willChange = "width, opacity";
-              logTabAnim("start", item.id, "open to=" + targetWidth + "px");
-              const anim = el.animate(
-                [
-                  { width: "0px", opacity: 0 },
-                  { width: targetWidth + "px", opacity: 1 }
-                ],
-                {
-                  duration: TAB_ANIM_DURATION,
-                  easing: "cubic-bezier(0.2, 0, 0, 1)"
+            if (animateSnapshot && typeof el.animate === "function") {
+              const openRec = {
+                rafId: null,
+                anim: null,
+                el: el,
+                targetWidth: item.targetWidth
+              };
+              tabOpenAnims.set(item.id, openRec);
+
+              const startOpen = function () {
+                if (tabOpenAnims.get(item.id) !== openRec) {
+                  return;
                 }
-              );
-              anim.finished.then(function () {
-                el.style.willChange = "";
-                logTabAnim("finish", item.id, "open");
-              }, function () {
-                el.style.willChange = "";
-              });
+                openRec.rafId = null;
+                if (!el.isConnected || el.classList.contains("tab-closing") || tabNodeMap.get(item.id) !== el) {
+                  cancelOpenAnim(item.id);
+                  return;
+                }
+                const finalW = openRec.targetWidth;
+                const duration = getTabAnimDurationMs();
+                el.style.width = finalW + "px";
+                el.style.opacity = "1";
+                if (duration <= 0 || isReducedMotion()) {
+                  el.classList.remove("tab-opening", "animating");
+                  el.style.willChange = "";
+                  tabOpenAnims.delete(item.id);
+                  sweepGhostTabs("open-anim-instant");
+                  return;
+                }
+
+                el.style.willChange = "width, opacity";
+                logTabAnim("start", item.id, "open to=" + finalW + "px");
+                const anim = el.animate(
+                  [
+                    { width: "0px", opacity: 0 },
+                    { width: finalW + "px", opacity: 1 }
+                  ],
+                  {
+                    duration: duration,
+                    easing: "cubic-bezier(0.2, 0, 0, 1)"
+                  }
+                );
+                openRec.anim = anim;
+
+                function finishOpen(cancelled) {
+                  if (tabOpenAnims.get(item.id) !== openRec) {
+                    return;
+                  }
+                  tabOpenAnims.delete(item.id);
+                  if (tabNodeMap.get(item.id) === el && !el.classList.contains("tab-closing")) {
+                    el.style.width = openRec.targetWidth + "px";
+                    el.style.opacity = "1";
+                    el.classList.remove("tab-opening", "animating");
+                    el.style.willChange = "";
+                    updateScrollButtons();
+                    if (el.classList.contains("active")) {
+                      scrollActiveTabIntoView();
+                    }
+                  }
+                  if (!cancelled) {
+                    logTabAnim("finish", item.id, "open");
+                  }
+                  sweepGhostTabs("open-anim-finish");
+                }
+
+                anim.oncancel = function () {
+                  finishOpen(true);
+                };
+                anim.finished.then(
+                  function () { finishOpen(false); },
+                  function () { finishOpen(true); }
+                );
+              };
+
+              if (typeof requestAnimationFrame === "function") {
+                openRec.rafId = requestAnimationFrame(startOpen);
+              } else {
+                openRec.rafId = setTimeout(startOpen, 16);
+              }
             }
             if (el.classList.contains("active")) {
               el.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "nearest", inline: "nearest" });
@@ -2480,6 +3377,73 @@
           }
         }
       }
+
+      function updateTabsLayout(disableAnimations) {
+        if (!currentState || !currentState.tabs || currentState.tabs.length === 0) return;
+
+        // Batched reads
+        const stripWidth = getAvailableStripWidth();
+        const layout = computeTabStripLayout(currentState.tabs, stripWidth, frozenTabWidth);
+        const targetWidth = layout.width;
+
+        const tabs = Array.from(tabsContainer.querySelectorAll(".tab:not(.tab-closing)"));
+        const prevLefts = new Map();
+        tabs.forEach(function (tabEl) {
+          const id = parseInt(tabEl.dataset.tabId, 10);
+          if (!isNaN(id)) {
+            prevLefts.set(id, Math.round(tabEl.getBoundingClientRect().left));
+          }
+        });
+
+        // Cancel active FLIP animations before writing final layout
+        tabs.forEach(function (tabEl) {
+          const id = parseInt(tabEl.dataset.tabId, 10);
+          if (!isNaN(id)) {
+            cancelFlipAnim(id, disableAnimations ? "disable-anim" : "retarget-layout");
+          }
+        });
+
+        // Batched writes
+        tabs.forEach(function (tabEl) {
+          const id = parseInt(tabEl.dataset.tabId, 10);
+          const pendingOpen = !isNaN(id) ? tabOpenAnims.get(id) : null;
+          if (pendingOpen && !pendingOpen.anim) {
+            pendingOpen.targetWidth = targetWidth;
+          } else {
+            tabEl.style.width = targetWidth + "px";
+          }
+          applyTabVisibility(tabEl, targetWidth, tabEl.classList.contains("active"));
+        });
+
+        // Batched read of final positions + start WAAPI FLIP
+        if (!disableAnimations) {
+          const nextLefts = new Map();
+          tabs.forEach(function (tabEl) {
+            const id = parseInt(tabEl.dataset.tabId, 10);
+            if (!isNaN(id) && prevLefts.has(id)) {
+              nextLefts.set(id, Math.round(tabEl.getBoundingClientRect().left));
+            }
+          });
+          tabs.forEach(function (tabEl) {
+            const id = parseInt(tabEl.dataset.tabId, 10);
+            if (!isNaN(id) && prevLefts.has(id) && nextLefts.has(id)) {
+              animateTabFlip(tabEl, id, prevLefts.get(id), nextLefts.get(id));
+            }
+          });
+        }
+
+        if (activeDrag && activeDrag.isDragging) {
+          activeDrag.slotWidth = targetWidth + TAB_GAP;
+          updateDragPositions();
+        }
+
+        updateScrollButtons();
+      }
+
+      initUiModule("tab_strip", function () {
+      setInterval(function () {
+        sweepGhostTabs("idle-1s");
+      }, 1000);
 
       tabStrip.addEventListener("mouseleave", function () {
         if (frozenTabWidth !== null) {
@@ -2516,62 +3480,6 @@
       let resizeFrames = 0;
       let lastResizeTime = 0;
 
-      function updateTabsLayout(disableAnimations) {
-        if (!currentState || !currentState.tabs || currentState.tabs.length === 0) return;
-
-        // Batched reads
-        const stripWidth = getAvailableStripWidth();
-        const layout = computeTabStripLayout(currentState.tabs, stripWidth, frozenTabWidth);
-        const targetWidth = layout.width;
-
-        const tabs = Array.from(tabsContainer.querySelectorAll(".tab:not(.tab-closing)"));
-        const prevLefts = new Map();
-        tabs.forEach(function (tabEl) {
-          const id = parseInt(tabEl.dataset.tabId, 10);
-          if (!isNaN(id)) {
-            prevLefts.set(id, Math.round(tabEl.getBoundingClientRect().left));
-          }
-        });
-
-        // Cancel active FLIP animations before writing final layout
-        tabs.forEach(function (tabEl) {
-          const id = parseInt(tabEl.dataset.tabId, 10);
-          if (!isNaN(id)) {
-            cancelFlipAnim(id, disableAnimations ? "disable-anim" : "retarget-layout");
-          }
-        });
-
-        // Batched writes
-        tabs.forEach(function (tabEl) {
-          tabEl.style.width = targetWidth + "px";
-          applyTabVisibility(tabEl, targetWidth, tabEl.classList.contains("active"));
-        });
-
-        // Batched read of final positions + start WAAPI FLIP
-        if (!disableAnimations) {
-          const nextLefts = new Map();
-          tabs.forEach(function (tabEl) {
-            const id = parseInt(tabEl.dataset.tabId, 10);
-            if (!isNaN(id) && prevLefts.has(id)) {
-              nextLefts.set(id, Math.round(tabEl.getBoundingClientRect().left));
-            }
-          });
-          tabs.forEach(function (tabEl) {
-            const id = parseInt(tabEl.dataset.tabId, 10);
-            if (!isNaN(id) && prevLefts.has(id) && nextLefts.has(id)) {
-              animateTabFlip(tabEl, id, prevLefts.get(id), nextLefts.get(id));
-            }
-          });
-        }
-
-        if (activeDrag && activeDrag.isDragging) {
-          activeDrag.slotWidth = targetWidth + TAB_GAP;
-          updateDragPositions();
-        }
-
-        updateScrollButtons();
-      }
-
       if (window.ResizeObserver) {
         const stripObserver = new ResizeObserver(function () {
           const now = performance.now();
@@ -2600,6 +3508,7 @@
         });
         stripObserver.observe(tabStrip);
       }
+      });
 
       window.__emberFocusOmnibox = function () {
         omnibox.focus();
@@ -2632,6 +3541,10 @@
         }
         const prevActiveId = currentState.activeTabId;
         currentState = nextState;
+
+        if (prevActiveId && prevActiveId !== currentState.activeTabId && activePopupKind !== null) {
+          closeSuggestions("tab_switch");
+        }
 
         if (typeof currentState.tabAnimationsEnabled === "boolean") {
           document.documentElement.setAttribute("data-reduced-motion", currentState.tabAnimationsEnabled ? "false" : "true");
@@ -2681,6 +3594,9 @@
         }
 
         const zoomPct = currentState.activeZoomPercent || 100;
+        if (menuZoomVal) {
+          menuZoomVal.textContent = zoomPct + "%";
+        }
         if (zoomPct !== 100) {
           zoomPill.className = "omnibox-action-btn zoom-pill visible";
           zoomPill.textContent = zoomPct + "%";
@@ -2705,14 +3621,16 @@
           downloadsBtn.className = "downloads-pill";
         }
 
-        if (currentState.recentlyClosedCount > 0) {
-          reopenChip.textContent = "Reopen Tab (" + currentState.recentlyClosedCount + ")";
-          reopenChip.disabled = false;
-          reopenChip.style.opacity = "1";
-        } else {
-          reopenChip.textContent = "Reopen Tab";
-          reopenChip.disabled = true;
-          reopenChip.style.opacity = "0.5";
+        if (typeof reopenChip !== "undefined" && reopenChip) {
+          if (currentState.recentlyClosedCount > 0) {
+            reopenChip.textContent = "Reopen Tab (" + currentState.recentlyClosedCount + ")";
+            reopenChip.disabled = false;
+            reopenChip.style.opacity = "1";
+          } else {
+            reopenChip.textContent = "Reopen Tab";
+            reopenChip.disabled = true;
+            reopenChip.style.opacity = "0.5";
+          }
         }
 
         const blockedCount = active && typeof active.blockedCount === "number" ? active.blockedCount : 0;
@@ -3008,7 +3926,750 @@
         });
       }
 
+      window.__emberRunSelfTest = async function () {
+        function sleep(ms) {
+          return new Promise(function (resolve) {
+            setTimeout(resolve, ms);
+          });
+        }
+        async function waitUntil(pred, timeoutMs) {
+          const deadline = performance.now() + (timeoutMs || 3000);
+          while (performance.now() < deadline) {
+            try {
+              if (pred()) {
+                return true;
+              }
+            } catch (_) {}
+            await sleep(25);
+          }
+          try {
+            return Boolean(pred());
+          } catch (_) {
+            return false;
+          }
+        }
+
+        function getActiveTabUrl() {
+          if (!currentState || !Array.isArray(currentState.tabs)) return "";
+          const active = currentState.tabs.find(function (t) {
+            return t && t.id === currentState.activeTabId;
+          });
+          return active && active.url ? String(active.url) : "";
+        }
+
+        await waitUntil(function () {
+          return (
+            currentState &&
+            Array.isArray(currentState.tabs) &&
+            currentState.tabs.length > 0 &&
+            tabsContainer &&
+            tabsContainer.querySelectorAll(".tab").length > 0
+          );
+        }, 3000);
+
+        const results = [];
+        const origUrl = getActiveTabUrl();
+        const startedTabId = currentState ? currentState.activeTabId : 0;
+        const startedFromSelfTest = origUrl === "ember://selftest";
+        let popupOpened = false;
+        let popupClosed = false;
+
+        try {
+          // 1. UI scripts initialized without errors
+          const failedList = Array.isArray(uiModulesFailed) ? uiModulesFailed : [];
+          const jsErrs = Array.isArray(window.__uiJsErrors) ? window.__uiJsErrors : [];
+          results.push({
+            name: "UI scripts initialized without errors",
+            pass: failedList.length === 0 && jsErrs.length === 0,
+            detail: "failed_modules=" + failedList.length + ", js_errors=" + jsErrs.length
+          });
+
+          // 2. Omnibox navigates to a URL
+          const navTarget = origUrl === "ember://settings" ? "ember://history" : "ember://settings";
+          window.focus();
+          omnibox.focus();
+          await sleep(30);
+          omnibox.value = navTarget;
+          omniboxSelectedIdx = -1;
+          omnibox.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: "Enter",
+              code: "Enter",
+              keyCode: 13,
+              which: 13,
+              bubbles: true,
+              cancelable: true
+            })
+          );
+          const navOk = await waitUntil(function () {
+            return getActiveTabUrl() === navTarget;
+          }, 4000);
+          results.push({
+            name: "omnibox navigates to a URL",
+            pass: navOk,
+            detail: "target=" + navTarget + " actual=" + getActiveTabUrl()
+          });
+
+          // 3. Omnibox returns suggestions for a known history entry
+          omnibox.focus();
+          ensureOmniboxFocusSynced();
+          await sleep(30);
+          omniboxItems = [];
+          omniboxSelectedIdx = -1;
+          omnibox.value = "selftest.ember.local";
+          omnibox.dispatchEvent(
+            typeof InputEvent === "function"
+              ? new InputEvent("input", {
+                  bubbles: true,
+                  inputType: "insertText",
+                  data: "selftest.ember.local"
+                })
+              : new Event("input", { bubbles: true })
+          );
+          const gotSuggestion = await waitUntil(function () {
+            return (
+              Array.isArray(omniboxItems) &&
+              omniboxItems.some(function (it) {
+                return it && String(it.url || "").indexOf("selftest.ember.local") !== -1;
+              })
+            );
+          }, 4000);
+          results.push({
+            name: "omnibox returns suggestions for a known history entry",
+            pass: gotSuggestion,
+            detail: "matches=" + (Array.isArray(omniboxItems) ? omniboxItems.length : 0)
+          });
+
+          // 4. Popup opens and closes (omnibox overlay + three-dot menu overlay)
+          popupOpened = await waitUntil(function () {
+            return activePopupKind === "omnibox"
+              && omniboxDropdown.classList.contains("open")
+              && overlayExpanded
+              && window.innerHeight > 120;
+          }, 1200);
+          if (!popupOpened && menuBtn) {
+            menuBtn.click();
+            popupOpened = await waitUntil(function () {
+              return activePopupKind === "menu"
+                && menuDropdown.classList.contains("open")
+                && overlayExpanded
+                && window.innerHeight > 120;
+            }, 1500);
+          }
+          await sleep(80);
+          closeSuggestions("selftest");
+          omnibox.blur();
+          popupClosed = await waitUntil(function () {
+            return activePopupKind === null
+              && !overlayExpanded
+              && !omniboxDropdown.classList.contains("open")
+              && !menuDropdown.classList.contains("open")
+              && !overlayScrim.classList.contains("open")
+              && Math.abs(window.innerHeight - 84) <= 2;
+          }, 1500);
+          let menuToggleOk = false;
+          if (menuBtn) {
+            menuBtn.click();
+            const menuOpened = await waitUntil(function () {
+              return activePopupKind === "menu"
+                && menuDropdown.classList.contains("open")
+                && overlayScrim.classList.contains("open")
+                && overlayExpanded
+                && window.innerHeight > 120;
+            }, 1500);
+            overlayScrim.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+            const menuClosed = await waitUntil(function () {
+              return activePopupKind === null
+                && !overlayExpanded
+                && !menuDropdown.classList.contains("open")
+                && !overlayScrim.classList.contains("open")
+                && Math.abs(window.innerHeight - 84) <= 2;
+            }, 1500);
+            menuToggleOk = menuOpened && menuClosed;
+          }
+          results.push({
+            name: "popup opens and closes",
+            pass: popupOpened && popupClosed && menuToggleOk,
+            detail: "opened=" + popupOpened + " closed=" + popupClosed + " menuToggleOk=" + menuToggleOk + " innerHeight=" + window.innerHeight
+          });
+
+          // 5. A tab opens with an animation
+          await sleep(100);
+          const prevIds = new Set(
+            (currentState && Array.isArray(currentState.tabs) ? currentState.tabs : []).map(
+              function (t) {
+                return t.id;
+              }
+            )
+          );
+          let openedTabId = null;
+          let openAnimSeen = false;
+          let rafMonitorActive = true;
+          const inspectOpenAnim = function () {
+            if (!tabsContainer) return;
+            tabsContainer.querySelectorAll(".tab").forEach(function (el) {
+              const id = parseInt(el.dataset.tabId, 10);
+              if (!isNaN(id) && !prevIds.has(id)) {
+                openedTabId = id;
+                const hasRunningWaapi =
+                  typeof el.getAnimations === "function" && el.getAnimations().length > 0;
+                if (
+                  tabOpenAnims.has(id) ||
+                  el.classList.contains("tab-opening") ||
+                  el.classList.contains("animating") ||
+                  hasRunningWaapi
+                ) {
+                  openAnimSeen = true;
+                }
+              }
+            });
+          };
+          const mo =
+            typeof MutationObserver === "function" && tabsContainer
+              ? new MutationObserver(inspectOpenAnim)
+              : null;
+          if (mo && tabsContainer) {
+            mo.observe(tabsContainer, { childList: true, subtree: false, attributes: true });
+          }
+          const rafPoll = function () {
+            inspectOpenAnim();
+            if (rafMonitorActive && typeof requestAnimationFrame === "function") {
+              requestAnimationFrame(rafPoll);
+            }
+          };
+          if (typeof requestAnimationFrame === "function") {
+            requestAnimationFrame(rafPoll);
+          }
+          if (newTabBtn) {
+            newTabBtn.click();
+          } else {
+            sendIpc("new_tab");
+          }
+          const tabAppeared = await waitUntil(function () {
+            inspectOpenAnim();
+            return (
+              currentState &&
+              Array.isArray(currentState.tabs) &&
+              currentState.tabs.some(function (t) {
+                if (!prevIds.has(t.id)) {
+                  openedTabId = t.id;
+                  return true;
+                }
+                return false;
+              })
+            );
+          }, 4500);
+          const openSettled = await waitUntil(function () {
+            inspectOpenAnim();
+            const el = openedTabId !== null ? tabNodeMap.get(openedTabId) : null;
+            return (
+              tabOpenAnims.size === 0 &&
+              el &&
+              !el.classList.contains("tab-opening") &&
+              el.offsetWidth > 20
+            );
+          }, 2000);
+          rafMonitorActive = false;
+          if (mo) {
+            mo.disconnect();
+          }
+          results.push({
+            name: "a tab opens with an animation",
+            pass: tabAppeared && openAnimSeen && openSettled,
+            detail:
+              "tabId=" +
+              openedTabId +
+              " animSeen=" +
+              openAnimSeen +
+              " settled=" +
+              openSettled +
+              " animationsEnabled=" +
+              Boolean(currentState && currentState.tabAnimationsEnabled)
+          });
+
+          // 6. A tab closes with an animation and its node is removed
+          const targetCloseId =
+            openedTabId !== null
+              ? openedTabId
+              : currentState && Array.isArray(currentState.tabs) && currentState.tabs.length > 1
+              ? currentState.tabs[currentState.tabs.length - 1].id
+              : null;
+          const closingEl = targetCloseId !== null ? tabNodeMap.get(targetCloseId) : null;
+          let sawCloseAnim = false;
+          let nodeRemoved = false;
+          if (targetCloseId !== null && closingEl) {
+            const closeBtn = closingEl.querySelector(".tab-close");
+            if (closeBtn) {
+              closeBtn.click();
+            } else {
+              closeTabOptimistically(targetCloseId, true);
+            }
+            const checkCloseAnim = function () {
+              const hasCloseWaapi =
+                typeof closingEl.getAnimations === "function" && closingEl.getAnimations().length > 0;
+              if (
+                closingNodes.has(targetCloseId) ||
+                closingEl.classList.contains("tab-closing") ||
+                closingEl.classList.contains("animating") ||
+                hasCloseWaapi
+              ) {
+                sawCloseAnim = true;
+              }
+            };
+            checkCloseAnim();
+            nodeRemoved = await waitUntil(function () {
+              checkCloseAnim();
+              const stillInState =
+                currentState &&
+                Array.isArray(currentState.tabs) &&
+                currentState.tabs.some(function (t) {
+                  return t.id === targetCloseId;
+                });
+              const stillInDom =
+                tabsContainer &&
+                Boolean(tabsContainer.querySelector('.tab[data-tab-id="' + targetCloseId + '"]'));
+              return !closingNodes.has(targetCloseId) && !closingEl.isConnected && !stillInState && !stillInDom;
+            }, 2000);
+          }
+          results.push({
+            name: "a tab closes with an animation and its node is removed",
+            pass: targetCloseId !== null && sawCloseAnim && nodeRemoved,
+            detail:
+              "tabId=" +
+              targetCloseId +
+              " closeAnimSeen=" +
+              sawCloseAnim +
+              " nodeRemoved=" +
+              nodeRemoved
+          });
+
+          // 7. DOM tab count equals Rust tab count
+          await sleep(120);
+          const allDomTabs = tabsContainer ? tabsContainer.querySelectorAll(".tab").length : 0;
+          const liveDomTabs = tabsContainer
+            ? tabsContainer.querySelectorAll(".tab:not(.tab-closing)").length
+            : 0;
+          const stateCount =
+            currentState && Array.isArray(currentState.tabs) ? currentState.tabs.length : -1;
+          results.push({
+            name: "DOM tab count equals Rust tab count",
+            pass: allDomTabs === liveDomTabs && liveDomTabs === stateCount && stateCount > 0,
+            detail:
+              "allDom=" + allDomTabs + " liveDom=" + liveDomTabs + " stateTabs=" + stateCount
+          });
+
+          // 8. Overlay opens and closes 50 times per close path and always restores toolbar height
+          function waitFast(pred, timeoutMs) {
+            try {
+              if (pred()) return Promise.resolve(true);
+            } catch (_) {}
+            return new Promise(function (resolve) {
+              let settled = false;
+              let pollTimer = null;
+              let maxTimer = null;
+              function finish(val) {
+                if (settled) return;
+                settled = true;
+                if (window.__overlayTransitionHook === check) {
+                  window.__overlayTransitionHook = null;
+                }
+                if (pollTimer) clearInterval(pollTimer);
+                if (maxTimer) clearTimeout(maxTimer);
+                resolve(val);
+              }
+              function check() {
+                try {
+                  if (pred()) finish(true);
+                } catch (_) {}
+              }
+              window.__overlayTransitionHook = check;
+              pollTimer = setInterval(check, 4);
+              maxTimer = setTimeout(function () {
+                let finalVal = false;
+                try {
+                  finalVal = Boolean(pred());
+                } catch (_) {}
+                finish(finalVal);
+              }, timeoutMs || 1500);
+            });
+          }
+
+          function isToolbarHeightRestored() {
+            return Math.abs(window.innerHeight - 84) <= 2;
+          }
+
+          async function openStressOverlayCycle() {
+            window.focus();
+            omnibox.focus();
+            ensureOmniboxFocusSynced();
+            omnibox.value = "selftest";
+            omniboxTypedValue = "selftest";
+            omniboxSelectedIdx = -1;
+            const activeUrl = getActiveTabUrl() || "ember://selftest";
+            const seq = nextOmniboxQuerySeq();
+            window.__emberShowOmniboxSuggestions(
+              seq,
+              [
+                {
+                  kind: "history",
+                  title: "Ember Self-Test Guide",
+                  url: activeUrl,
+                  isDefault: false
+                }
+              ],
+              null
+            );
+            return await waitFast(function () {
+              return (
+                overlayExpanded &&
+                activePopupKind === "omnibox" &&
+                omniboxDropdown.classList.contains("open") &&
+                overlayScrim.classList.contains("open") &&
+                window.innerHeight > 120
+              );
+            }, 1500);
+          }
+
+          async function verifyShrinkRestored() {
+            return await waitFast(function () {
+              return (
+                !overlayExpanded &&
+                activePopupKind === null &&
+                !omniboxDropdown.classList.contains("open") &&
+                !overlayScrim.classList.contains("open") &&
+                isToolbarHeightRestored()
+              );
+            }, 1500);
+          }
+
+          const CYCLES_PER_PATH = 50;
+          const closePaths = [
+            {
+              name: "scrim_click",
+              trigger: function () {
+                overlayScrim.dispatchEvent(
+                  new PointerEvent("pointerdown", { bubbles: true, cancelable: true })
+                );
+              }
+            },
+            {
+              name: "escape",
+              trigger: function () {
+                omnibox.dispatchEvent(
+                  new KeyboardEvent("keydown", {
+                    key: "Escape",
+                    code: "Escape",
+                    keyCode: 27,
+                    which: 27,
+                    bubbles: true,
+                    cancelable: true
+                  })
+                );
+              }
+            },
+            {
+              name: "enter",
+              trigger: function () {
+                omnibox.value = "";
+                omniboxSelectedIdx = -1;
+                omnibox.dispatchEvent(
+                  new KeyboardEvent("keydown", {
+                    key: "Enter",
+                    code: "Enter",
+                    keyCode: 13,
+                    which: 13,
+                    bubbles: true,
+                    cancelable: true
+                  })
+                );
+              }
+            },
+            {
+              name: "omnibox_blur",
+              trigger: function () {
+                omnibox.blur();
+              }
+            },
+            {
+              name: "empty_input",
+              trigger: function () {
+                omnibox.value = "";
+                omniboxTypedValue = "";
+                omnibox.dispatchEvent(
+                  typeof InputEvent === "function"
+                    ? new InputEvent("input", {
+                        bubbles: true,
+                        inputType: "deleteContentBackward",
+                        data: ""
+                      })
+                    : new Event("input", { bubbles: true })
+                );
+              }
+            },
+            {
+              name: "window_blur",
+              trigger: function () {
+                window.dispatchEvent(new Event("blur"));
+              }
+            },
+            {
+              name: "tab_switch",
+              trigger: function () {
+                window.dispatchEvent(
+                  new KeyboardEvent("keydown", {
+                    key: "1",
+                    ctrlKey: true,
+                    bubbles: true,
+                    cancelable: true
+                  })
+                );
+              }
+            },
+            {
+              name: "navigation_start",
+              trigger: function () {
+                window.dispatchEvent(
+                  new KeyboardEvent("keydown", {
+                    key: "ArrowLeft",
+                    altKey: true,
+                    bubbles: true,
+                    cancelable: true
+                  })
+                );
+              }
+            },
+            {
+              name: "suggestion_click",
+              trigger: function () {
+                const row = omniboxDropdown.querySelector(".omnibox-item");
+                if (row) {
+                  row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+                  row.click();
+                } else {
+                  closeSuggestions("suggestion_click");
+                }
+              }
+            }
+          ];
+
+          const pathSummaries = [];
+          let allPathsPassed = true;
+          for (let p = 0; p < closePaths.length; p += 1) {
+            const path = closePaths[p];
+            let okCount = 0;
+            for (let iter = 0; iter < CYCLES_PER_PATH; iter += 1) {
+              const expanded = await openStressOverlayCycle();
+              if (!expanded) break;
+              path.trigger();
+              const shrunk = await verifyShrinkRestored();
+              if (!shrunk) break;
+              okCount += 1;
+            }
+            pathSummaries.push(path.name + "=" + okCount + "/" + CYCLES_PER_PATH);
+            if (okCount !== CYCLES_PER_PATH) {
+              allPathsPassed = false;
+            }
+          }
+
+          // Idempotent double-close check while collapsed
+          closeSuggestions("idempotent_first");
+          closeSuggestions("idempotent_second");
+          const doubleCloseOk = await verifyShrinkRestored();
+          if (!doubleCloseOk) {
+            allPathsPassed = false;
+          }
+
+          results.push({
+            name: "overlay opens and closes 50 times per close path",
+            pass: allPathsPassed,
+            detail: pathSummaries.join(", ") + ", doubleCloseOk=" + doubleCloseOk
+          });
+
+          // 9. Tab title font-size is 12px at 1, 5, 15, and 30 tabs (and UI zoom stays 1.0)
+          const savedState = JSON.parse(JSON.stringify(currentState));
+          const savedTabStripWidth = tabStrip.style.width;
+          const savedLastAppliedRevision = lastAppliedRevision;
+          let typoRev = (currentState && typeof currentState.tabRevision === "number" ? currentState.tabRevision : 100) + 1;
+          const fontCheckCounts = [1, 5, 15, 30];
+          const fontThemes = ["light", "dark"];
+          const simWidths = [
+            { label: "100%", width: 1280 },
+            { label: "125%", width: 1024 },
+            { label: "150%", width: 853 }
+          ];
+          const tabFontSummaries = [];
+          let tabFontsOk = true;
+
+          for (let tIdx = 0; tIdx < fontThemes.length; tIdx += 1) {
+            const themeName = fontThemes[tIdx];
+            for (let sIdx = 0; sIdx < simWidths.length; sIdx += 1) {
+              const sim = simWidths[sIdx];
+              tabStrip.style.width = sim.width + "px";
+              for (let cIdx = 0; cIdx < fontCheckCounts.length; cIdx += 1) {
+                const count = fontCheckCounts[cIdx];
+                const mockTabs = [];
+                for (let k = 0; k < count; k += 1) {
+                  mockTabs.push({
+                    id: 9000 + k,
+                    title: "Tab " + (k + 1) + " Typography Sample",
+                    url: "https://example.com/" + k,
+                    favicon: "",
+                    loading: false,
+                    suspended: false
+                  });
+                }
+                typoRev += 1;
+                window.__emberUpdateState({
+                  ...savedState,
+                  tabRevision: typoRev,
+                  activeTabId: 9000,
+                  tabAnimationsEnabled: false,
+                  suppressTabAnimation: true,
+                  theme: themeName,
+                  tabs: mockTabs
+                });
+                const titles = tabsContainer.querySelectorAll(".tab:not(.tab-closing) .tab-title");
+                let badFont = null;
+                let badTransform = null;
+                titles.forEach(function (el) {
+                  const cs = getComputedStyle(el);
+                  if (cs.fontSize !== "12px" || cs.fontWeight !== "400" || cs.fontFamily.toLowerCase().indexOf("segoe ui") === -1) {
+                    badFont = cs.fontSize + "/" + cs.fontWeight + "/" + cs.fontFamily;
+                  }
+                  const tabEl = el.closest(".tab");
+                  if (tabEl) {
+                    const tf = getComputedStyle(tabEl).transform;
+                    if (tf && tf !== "none") {
+                      const m = tf.match(/^matrix\(([^)]+)\)$/);
+                      if (!m) {
+                        badTransform = tf;
+                      } else {
+                        const parts = m[1].split(",").map(parseFloat);
+                        if (Math.abs(parts[0] - 1) > 0.001 || Math.abs(parts[3] - 1) > 0.001) {
+                          badTransform = tf;
+                        }
+                      }
+                    }
+                  }
+                });
+                if (titles.length !== count || badFont !== null || badTransform !== null) {
+                  tabFontsOk = false;
+                  tabFontSummaries.push(
+                    themeName + "@" + sim.label + "/" + count + ":n=" + titles.length + ",font=" + badFont + ",tf=" + badTransform
+                  );
+                }
+              }
+            }
+          }
+
+          tabStrip.style.width = savedTabStripWidth;
+          lastAppliedRevision = 0;
+          window.__emberUpdateState({
+            ...savedState,
+            tabRevision: savedLastAppliedRevision,
+            suppressTabAnimation: true
+          });
+
+          const dprBeforeZoom = window.devicePixelRatio;
+          sendIpc("zoom_in");
+          await sleep(40);
+          sendIpc("zoom_reset");
+          await sleep(40);
+          const dprAfterZoom = window.devicePixelRatio;
+          const activeTitleAfterZoom = tabsContainer.querySelector(".tab:not(.tab-closing) .tab-title");
+          const fontSizeAfterZoom = activeTitleAfterZoom ? getComputedStyle(activeTitleAfterZoom).fontSize : "none";
+          const zoomIsolatedOk = dprBeforeZoom === dprAfterZoom && fontSizeAfterZoom === "12px";
+          if (!zoomIsolatedOk) {
+            tabFontsOk = false;
+          }
+
+          let hardcodedFontRules = 0;
+          try {
+            for (let si = 0; si < document.styleSheets.length; si += 1) {
+              const rules = document.styleSheets[si].cssRules || [];
+              for (let ri = 0; ri < rules.length; ri += 1) {
+                const rule = rules[ri];
+                if (rule.selectorText && rule.selectorText !== ":root" && rule.style && rule.style.fontSize) {
+                  if (rule.style.fontSize.indexOf("var(--font-size-") === -1) {
+                    hardcodedFontRules += 1;
+                  }
+                }
+              }
+            }
+          } catch (_) {}
+          document.querySelectorAll("[style]").forEach(function (el) {
+            if (el.style && el.style.fontSize) {
+              hardcodedFontRules += 1;
+            }
+          });
+          if (hardcodedFontRules > 0) {
+            tabFontsOk = false;
+          }
+
+          results.push({
+            name: "tab title font-size is 12px at 1, 5, 15, and 30 tabs",
+            pass: tabFontsOk,
+            detail:
+              "counts=[1,5,15,30] themes=2 scales=3 zoomIsolated=" +
+              zoomIsolatedOk +
+              " fontAfterZoom=" +
+              fontSizeAfterZoom +
+              " hardcodedRules=" +
+              hardcodedFontRules +
+              (tabFontSummaries.length ? " mismatches=[" + tabFontSummaries.join("; ") + "]" : "")
+          });
+
+          if (startedFromSelfTest && getActiveTabUrl() !== "ember://selftest") {
+            const hasStartedTab =
+              startedTabId > 0 &&
+              currentState &&
+              Array.isArray(currentState.tabs) &&
+              currentState.tabs.some(function (t) {
+                return t && t.id === startedTabId;
+              });
+            if (hasStartedTab) {
+              sendIpc("switch_tab:" + startedTabId);
+              await waitUntil(function () {
+                return currentState && currentState.activeTabId === startedTabId;
+              }, 1500);
+            }
+            if (getActiveTabUrl() !== "ember://selftest") {
+              sendIpc("navigate:ember://selftest");
+              await waitUntil(function () {
+                return getActiveTabUrl() === "ember://selftest";
+              }, 2000);
+            }
+          }
+
+          sendIpc(
+            "selftest_report:" +
+              JSON.stringify({
+                items: results,
+                domCount: liveDomTabs,
+                allDomCount: allDomTabs,
+                stateCount: stateCount,
+                popupOpened: popupOpened,
+                popupClosed: popupClosed
+              })
+          );
+          return results;
+        } catch (err) {
+          reportUiJsError("selftest", err && err.message ? err.message : String(err), err && err.stack);
+          sendIpc(
+            "selftest_report:" +
+              JSON.stringify({
+                error: err && err.message ? err.message : String(err),
+                items: results
+              })
+          );
+          return results;
+        }
+      };
+
       sendIpc("ready");
+      if (uiModulesFailed.length === 0) {
+        sendIpc("ui_ready");
+      }
     })();
   </script>
 </body>

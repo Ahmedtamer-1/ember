@@ -532,4 +532,31 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn test_tab_animations_enabled_default_and_missing_toml_key() {
+        assert!(BrowserSettings::default().tab_animations_enabled);
+
+        // Empty TOML and TOML missing `tab_animations_enabled` must preserve default true.
+        assert!(BrowserSettings::from_toml_str("").tab_animations_enabled);
+        let without_key = BrowserSettings::from_toml_str(
+            "[general]\nhomepage = \"https://example.com\"\n[privacy]\nhttps_only_mode = true\n",
+        );
+        assert!(without_key.tab_animations_enabled);
+        assert!(without_key.https_only_mode);
+
+        // Explicit boolean values and invalid fallback.
+        assert!(
+            !BrowserSettings::from_toml_str("[general]\ntab_animations_enabled = false\n")
+                .tab_animations_enabled
+        );
+        assert!(
+            BrowserSettings::from_toml_str("[general]\ntab_animations_enabled = true\n")
+                .tab_animations_enabled
+        );
+        assert!(
+            BrowserSettings::from_toml_str("[general]\ntab_animations_enabled = \"invalid\"\n")
+                .tab_animations_enabled
+        );
+    }
 }

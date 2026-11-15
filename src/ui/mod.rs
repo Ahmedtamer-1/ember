@@ -282,13 +282,27 @@ pub struct WindowAppearance {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiCommand {
     Ready,
+    UiReady,
+    UiInitError {
+        module: String,
+        error: String,
+    },
+    UiJsError(String),
+    OpenUiDevTools,
+    SelfTestReport(String),
     NewTab,
     NewWindow,
     OpenNewTab(String),
     OpenDownloads,
     Print,
-    OpenPopup(String),
-    ClosePopup,
+    OverlayExpand(String),
+    OverlayShrink(String),
+    OmniboxFocus,
+    OmniboxBlur,
+    OverlayVisibility {
+        visible: bool,
+        kind: String,
+    },
     OmniboxSuggest {
         query_id: u64,
         allow_autofill: bool,
@@ -336,11 +350,16 @@ pub fn parse_ipc_command(raw: &str) -> Option<UiCommand> {
     let trimmed = raw.trim();
     match trimmed {
         "ready" => Some(UiCommand::Ready),
+        "ui_ready" => Some(UiCommand::UiReady),
+        "open_ui_devtools" => Some(UiCommand::OpenUiDevTools),
         "new_tab" => Some(UiCommand::NewTab),
         "new_window" => Some(UiCommand::NewWindow),
         "open_downloads" => Some(UiCommand::OpenDownloads),
         "print" => Some(UiCommand::Print),
-        "close_popup" => Some(UiCommand::ClosePopup),
+        "close_popup" => Some(UiCommand::OverlayShrink(String::from("close_popup"))),
+        "overlay_shrink" => Some(UiCommand::OverlayShrink(String::from("explicit"))),
+        "omnibox_focus" => Some(UiCommand::OmniboxFocus),
+        "omnibox_blur" => Some(UiCommand::OmniboxBlur),
         "next_tab" => Some(UiCommand::NextTab),
         "prev_tab" => Some(UiCommand::PrevTab),
         "reopen_closed_tab" => Some(UiCommand::ReopenClosedTab),
@@ -416,32 +435,76 @@ pub fn parse_ipc_command(raw: &str) -> Option<UiCommand> {
                 Some(UiCommand::FindPrev(q.to_owned()))
             } else if let Some(url) = trimmed.strip_prefix("open_new_tab:") {
                 Some(UiCommand::OpenNewTab(url.trim().to_owned()))
+            } else if let Some(kind) = trimmed.strip_prefix("overlay_expand:") {
+                Some(UiCommand::OverlayExpand(kind.trim().to_owned()))
+            } else if let Some(reason) = trimmed.strip_prefix("overlay_shrink:") {
+                let r = reason.trim();
+                Some(UiCommand::OverlayShrink(if r.is_empty() {
+                    String::from("explicit")
+                } else {
+                    r.to_owned()
+                }))
+            } else if let Some(rest) = trimmed.strip_prefix("overlay_visibility:") {
+                let mut parts = rest.splitn(2, ':');
+                let vis_raw = parts.next().unwrap_or("0").trim();
+                let kind = parts.next().unwrap_or("none").trim().to_owned();
+                let visible = vis_raw == "1" || vis_raw.eq_ignore_ascii_case("true");
+                Some(UiCommand::OverlayVisibility { visible, kind })
             } else if let Some(json) = trimmed.strip_prefix("open_popup:") {
-                Some(UiCommand::OpenPopup(json.trim().to_owned()))
+                Some(UiCommand::OverlayExpand(json.trim().to_owned()))
             } else if let Some(rest) = trimmed.strip_prefix("omnibox_suggest:") {
                 let mut parts = rest.splitn(3, ':');
-                let query_id = parts.next()?.trim().parse::<u64>().ok()?;
-                let second = parts.next().unwrap_or("");
-                let (allow_autofill, query) = if let Some(third) = parts.next() {
-                    (second.trim() != "0", third.to_owned())
-                } else {
-                    (true, second.to_owned())
-                };
-                Some(UiCommand::OmniboxSuggest {
-                    query_id,
-                    allow_autofill,
-                    query,
-                })
+                let first = parts.next().unwrap_or("");
+                match parts.next() {
+                    Some(second) => {
+                        if let Ok(query_id) = first.trim().parse::<u64>() {
+                            let (allow_autofill, query) = if let Some(third) = parts.next() {
+                                (second.trim() != "0", third.to_owned())
+                            } else {
+                                (true, second.to_owned())
+                            };
+                            Some(UiCommand::OmniboxSuggest {
+                                query_id,
+                                allow_autofill,
+                                query,
+                            })
+                        } else {
+                            // Legacy single-query payload containing a colon (e.g. `omnibox_suggest:http://...`)
+                            Some(UiCommand::OmniboxSuggest {
+                                query_id: 1,
+                                allow_autofill: true,
+                                query: rest.to_owned(),
+                            })
+                        }
+                    }
+                    None => Some(UiCommand::OmniboxSuggest {
+                        query_id: 1,
+                        allow_autofill: true,
+                        query: rest.to_owned(),
+                    }),
+                }
             } else if let Some(idx_str) = trimmed.strip_prefix("omnibox_select:") {
-                idx_str
-                    .trim()
-                    .parse::<isize>()
-                    .ok()
-                    .map(UiCommand::OmniboxSelect)
+                let parsed = idx_str.trim().parse::<isize>().ok();
+                if parsed.is_none() {
+                    eprintln!("[ember][ui-ipc] failed to parse omnibox_select index: {trimmed}");
+                }
+                parsed.map(UiCommand::OmniboxSelect)
+            } else if let Some(rest) = trimmed.strip_prefix("ui_init_error:") {
+                let mut parts = rest.splitn(2, ':');
+                let module = parts.next().unwrap_or("unknown").trim().to_owned();
+                let error = parts.next().unwrap_or("unknown error").trim().to_owned();
+                Some(UiCommand::UiInitError { module, error })
+            } else if let Some(payload) = trimmed.strip_prefix("ui_js_error:") {
+                Some(UiCommand::UiJsError(payload.trim().to_owned()))
+            } else if let Some(report) = trimmed.strip_prefix("selftest_report:") {
+                Some(UiCommand::SelfTestReport(report.trim().to_owned()))
+            } else if let Some(target) = trimmed.strip_prefix("navigate:") {
+                Some(UiCommand::Navigate(target.trim().to_owned()))
             } else {
-                trimmed
-                    .strip_prefix("navigate:")
-                    .map(|target| UiCommand::Navigate(target.trim().to_owned()))
+                if !trimmed.is_empty() {
+                    eprintln!("[ember][ui-ipc] unrecognized UI IPC message: {trimmed}");
+                }
+                None
             }
         }
     }
@@ -730,6 +793,30 @@ pub fn snap_window_to_zone(window: &Window, zone: SnapZone) {
     platform::snap_window_to_zone(window, zone);
 }
 
+fn is_ipv4_authority(input: &str) -> bool {
+    if input.contains(char::is_whitespace) {
+        return false;
+    }
+    let authority = input.split('/').next().unwrap_or("");
+    let (host, port) = match authority.split_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (authority, None),
+    };
+    if let Some(p) = port {
+        if p.is_empty() || p.parse::<u16>().is_err() {
+            return false;
+        }
+    }
+    let mut count = 0usize;
+    for part in host.split('.') {
+        if part.is_empty() || part.parse::<u8>().is_err() {
+            return false;
+        }
+        count += 1;
+    }
+    count == 4
+}
+
 /// Normalizes raw omnibox user input into a navigable URL or a search URL for `engine`.
 pub fn normalize_omnibox_input(input: &str, engine: SearchEngine) -> String {
     let trimmed = input.trim();
@@ -750,7 +837,7 @@ pub fn normalize_omnibox_input(input: &str, engine: SearchEngine) -> String {
         return trimmed.to_owned();
     }
 
-    if lower == "localhost" || lower.starts_with("localhost:") || lower.starts_with("127.0.0.1") {
+    if lower == "localhost" || lower.starts_with("localhost:") || is_ipv4_authority(trimmed) {
         return format!("http://{trimmed}");
     }
 
@@ -764,6 +851,46 @@ pub fn normalize_omnibox_input(input: &str, engine: SearchEngine) -> String {
     } else {
         let encoded = url_encode_query(trimmed);
         engine.build_search_url(&encoded)
+    }
+}
+
+/// Ensures `suggestions` has a default navigable/search row at index 0 for any non-empty query.
+pub fn ensure_default_omnibox_row(
+    query: &str,
+    engine: SearchEngine,
+    suggestions: &mut Vec<crate::storage::OmniboxSuggestion>,
+) {
+    let trimmed = query.trim();
+    if trimmed.is_empty() || suggestions.iter().any(|s| s.is_default) {
+        return;
+    }
+    let normalized = normalize_omnibox_input(trimmed, engine);
+    let search_url = engine.build_search_url(&url_encode_query(trimmed));
+    let is_direct_url = normalized != search_url;
+    if let Some(pos) = suggestions.iter().position(|s| s.url == normalized) {
+        suggestions[pos].is_default = true;
+        if pos > 0 {
+            let item = suggestions.remove(pos);
+            suggestions.insert(0, item);
+        }
+    } else {
+        suggestions.insert(
+            0,
+            crate::storage::OmniboxSuggestion {
+                kind: if is_direct_url {
+                    crate::storage::SuggestionKind::History
+                } else {
+                    crate::storage::SuggestionKind::Search
+                },
+                title: trimmed.to_owned(),
+                url: normalized,
+                score: 2000.0,
+                is_default: true,
+            },
+        );
+        if suggestions.len() > 8 {
+            suggestions.truncate(8);
+        }
     }
 }
 
@@ -870,6 +997,32 @@ pub fn compute_layout_bounds(inner_size: PhysicalSize<u32>, scale_factor: f64) -
     };
 
     (chrome_bounds, content_bounds)
+}
+
+/// Computes the full-window logical rectangle used when the Chrome UI overlay is expanded.
+pub fn compute_expanded_chrome_bounds(inner_size: PhysicalSize<u32>, scale_factor: f64) -> Rect {
+    let scale = if scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    let logical_width = (f64::from(inner_size.width) / scale).max(1.0);
+    let logical_height = (f64::from(inner_size.height) / scale).max(1.0);
+
+    Rect {
+        position: LogicalPosition::new(0.0, 0.0).into(),
+        size: LogicalSize::new(logical_width, logical_height).into(),
+    }
+}
+
+/// Keeps the Chrome UI WebView container HWND above all content WebViews in Win32 Z-order.
+pub fn bring_chrome_webview_to_front(window: &Window) {
+    platform::bring_chrome_webview_to_front(window);
+}
+
+/// Returns whether `window` (or one of its child HWNDs) is currently the OS foreground window.
+pub fn is_window_foreground(window: &Window) -> bool {
+    platform::is_window_foreground(window)
 }
 
 /// Snapshot of state synced from Rust to the top Chrome UI WebView.
@@ -1109,8 +1262,16 @@ mod platform {
         dw_ref_data: usize,
     ) -> isize;
 
+    use std::sync::atomic::{AtomicIsize, Ordering};
+    const GW_CHILD: u32 = 5;
+    static CHROME_CHILD_HWND: AtomicIsize = AtomicIsize::new(0);
+
     #[link(name = "user32")]
     extern "system" {
+        fn GetForegroundWindow() -> isize;
+        fn IsChild(hwnd_parent: isize, hwnd: isize) -> i32;
+        fn GetWindow(hwnd: isize, u_cmd: u32) -> isize;
+        fn IsWindow(hwnd: isize) -> i32;
         fn MessageBoxW(
             hwnd: *mut c_void,
             lp_text: *const u16,
@@ -1176,6 +1337,40 @@ mod platform {
         // so Windows 11 native resize borders, Aero Snap, and Win+Arrow work cleanly; the visible
         // caption is removed in `frame_subclass_proc` via `WM_NCCALCSIZE`.
         builder.with_decorations(true)
+    }
+
+    pub fn bring_chrome_webview_to_front(window: &Window) {
+        let mut child_hwnd = CHROME_CHILD_HWND.load(Ordering::Acquire);
+        // SAFETY: `window.hwnd()` is a valid top-level window handle and `child_hwnd` is verified with `IsWindow`.
+        unsafe {
+            if child_hwnd == 0 || IsWindow(child_hwnd) == 0 {
+                let first_child = GetWindow(window.hwnd(), GW_CHILD);
+                if first_child != 0 {
+                    CHROME_CHILD_HWND.store(first_child, Ordering::Release);
+                    child_hwnd = first_child;
+                }
+            }
+            if child_hwnd != 0 {
+                let _ = SetWindowPos(
+                    child_hwnd,
+                    0, // HWND_TOP
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
+        }
+    }
+
+    pub fn is_window_foreground(window: &Window) -> bool {
+        let main_hwnd = window.hwnd();
+        // SAFETY: `GetForegroundWindow` and `IsChild` accept any HWND handle cleanly.
+        unsafe {
+            let fg = GetForegroundWindow();
+            fg != 0 && (fg == main_hwnd || IsChild(main_hwnd, fg) != 0)
+        }
     }
 
     pub fn install_window_frame(window: &Window) {
@@ -1421,6 +1616,12 @@ mod platform {
 
     pub fn install_window_frame(_window: &Window) {}
 
+    pub fn bring_chrome_webview_to_front(_window: &Window) {}
+
+    pub fn is_window_foreground(_window: &Window) -> bool {
+        false
+    }
+
     pub fn apply_window_attributes(_window: &Window, _is_dark: bool) {}
 
     pub fn system_accent_hex(is_dark: bool) -> String {
@@ -1533,5 +1734,215 @@ mod tests {
                 "http://example.com/insecure"
             )))
         );
+    }
+
+    #[test]
+    fn test_parse_ui_safety_net_commands() {
+        assert_eq!(
+            parse_ipc_command("open_ui_devtools"),
+            Some(UiCommand::OpenUiDevTools)
+        );
+        assert_eq!(
+            parse_ipc_command("ui_js_error:{\"kind\":\"error\",\"message\":\"boom\"}"),
+            Some(UiCommand::UiJsError(
+                "{\"kind\":\"error\",\"message\":\"boom\"}".to_owned()
+            ))
+        );
+        assert_eq!(
+            parse_ipc_command("selftest_report:{\"items\":[]}"),
+            Some(UiCommand::SelfTestReport("{\"items\":[]}".to_owned()))
+        );
+    }
+
+    #[test]
+    fn test_omnibox_url_vs_search_decision() {
+        assert_eq!(
+            normalize_omnibox_input("example.com", SearchEngine::Google),
+            "https://example.com"
+        );
+        assert_eq!(
+            normalize_omnibox_input("https://example.com/a?b=1", SearchEngine::Google),
+            "https://example.com/a?b=1"
+        );
+        assert_eq!(
+            normalize_omnibox_input("localhost:3000", SearchEngine::Google),
+            "http://localhost:3000"
+        );
+        assert_eq!(
+            normalize_omnibox_input("192.168.1.1", SearchEngine::Google),
+            "http://192.168.1.1"
+        );
+        assert_eq!(
+            normalize_omnibox_input("10.0.0.1:8080/status", SearchEngine::Google),
+            "http://10.0.0.1:8080/status"
+        );
+        assert_eq!(
+            normalize_omnibox_input("how to learn rust", SearchEngine::Google),
+            "https://www.google.com/search?q=how+to+learn+rust"
+        );
+        assert_eq!(
+            normalize_omnibox_input("what is 1.2 + 3.4", SearchEngine::DuckDuckGo),
+            "https://duckduckgo.com/?q=what+is+1.2+%2B+3.4"
+        );
+        assert_eq!(
+            normalize_omnibox_input("justoneword", SearchEngine::DuckDuckGo),
+            "https://duckduckgo.com/?q=justoneword"
+        );
+        assert_eq!(
+            normalize_omnibox_input(".leadingdot", SearchEngine::DuckDuckGo),
+            "https://duckduckgo.com/?q=.leadingdot"
+        );
+        assert_eq!(
+            normalize_omnibox_input("trailingdot.", SearchEngine::DuckDuckGo),
+            "https://duckduckgo.com/?q=trailingdot."
+        );
+
+        assert_eq!(parse_ipc_command("ui_ready"), Some(UiCommand::UiReady));
+        assert_eq!(
+            parse_ipc_command("ui_init_error:omnibox:SecurityError"),
+            Some(UiCommand::UiInitError {
+                module: String::from("omnibox"),
+                error: String::from("SecurityError"),
+            })
+        );
+        assert_eq!(
+            parse_ipc_command("omnibox_suggest:7:0:rust"),
+            Some(UiCommand::OmniboxSuggest {
+                query_id: 7,
+                allow_autofill: false,
+                query: String::from("rust"),
+            })
+        );
+        assert_eq!(
+            parse_ipc_command("omnibox_suggest:7:rust"),
+            Some(UiCommand::OmniboxSuggest {
+                query_id: 7,
+                allow_autofill: true,
+                query: String::from("rust"),
+            })
+        );
+        assert_eq!(
+            parse_ipc_command("omnibox_suggest:rust"),
+            Some(UiCommand::OmniboxSuggest {
+                query_id: 1,
+                allow_autofill: true,
+                query: String::from("rust"),
+            })
+        );
+
+        let mut rows = Vec::new();
+        ensure_default_omnibox_row("example.com", SearchEngine::DuckDuckGo, &mut rows);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].is_default);
+        assert_eq!(rows[0].url, "https://example.com");
+
+        let mut search_rows = Vec::new();
+        ensure_default_omnibox_row("rust gui", SearchEngine::Google, &mut search_rows);
+        assert_eq!(search_rows.len(), 1);
+        assert_eq!(search_rows[0].kind, crate::storage::SuggestionKind::Search);
+        assert_eq!(
+            search_rows[0].url,
+            "https://www.google.com/search?q=rust+gui"
+        );
+    }
+
+    #[test]
+    fn test_overlay_ipc_and_expanded_bounds() {
+        assert_eq!(
+            parse_ipc_command("overlay_expand:omnibox"),
+            Some(UiCommand::OverlayExpand(String::from("omnibox")))
+        );
+        assert_eq!(
+            parse_ipc_command("overlay_expand:menu"),
+            Some(UiCommand::OverlayExpand(String::from("menu")))
+        );
+        assert_eq!(
+            parse_ipc_command("overlay_shrink:scrim_click"),
+            Some(UiCommand::OverlayShrink(String::from("scrim_click")))
+        );
+        assert_eq!(
+            parse_ipc_command("overlay_shrink"),
+            Some(UiCommand::OverlayShrink(String::from("explicit")))
+        );
+        assert_eq!(
+            parse_ipc_command("close_popup"),
+            Some(UiCommand::OverlayShrink(String::from("close_popup")))
+        );
+        assert_eq!(
+            parse_ipc_command("omnibox_focus"),
+            Some(UiCommand::OmniboxFocus)
+        );
+        assert_eq!(
+            parse_ipc_command("omnibox_blur"),
+            Some(UiCommand::OmniboxBlur)
+        );
+        assert_eq!(
+            parse_ipc_command("overlay_visibility:1:omnibox"),
+            Some(UiCommand::OverlayVisibility {
+                visible: true,
+                kind: String::from("omnibox"),
+            })
+        );
+        assert_eq!(
+            parse_ipc_command("overlay_visibility:0:none"),
+            Some(UiCommand::OverlayVisibility {
+                visible: false,
+                kind: String::from("none"),
+            })
+        );
+
+        let expanded = compute_expanded_chrome_bounds(PhysicalSize::new(1475, 1000), 1.25);
+        assert_eq!(
+            expanded.size,
+            LogicalSize::new(1180.0_f64, 800.0_f64).into()
+        );
+    }
+
+    #[test]
+    fn test_chrome_html_typography_tokens_and_no_hardcoded_font_sizes() {
+        assert!(CHROME_HTML.contains(
+            r#"--font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;"#
+        ));
+        assert!(CHROME_HTML.contains("--font-size-tab: 12px;"));
+        assert!(CHROME_HTML.contains("--font-size-omnibox: 14px;"));
+        assert!(CHROME_HTML.contains("--font-size-menu: 13px;"));
+        assert!(CHROME_HTML.contains("text-size-adjust: 100%;"));
+
+        let style_start = CHROME_HTML.find("<style>").expect("<style> present");
+        let style_end = CHROME_HTML.find("</style>").expect("</style> present");
+        let css = &CHROME_HTML[style_start..style_end];
+
+        let mut in_root = false;
+        let mut brace_depth = 0usize;
+        for line in css.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with(":root") && trimmed.contains('{') {
+                in_root = true;
+            }
+            for ch in trimmed.chars() {
+                if ch == '{' {
+                    brace_depth += 1;
+                } else if ch == '}' {
+                    brace_depth = brace_depth.saturating_sub(1);
+                    if brace_depth == 0 {
+                        in_root = false;
+                    }
+                }
+            }
+            if !in_root && trimmed.contains("font-size:") {
+                assert!(
+                    trimmed.contains("var(--font-size-"),
+                    "Hard-coded font-size outside :root: {trimmed}"
+                );
+                assert!(
+                    !trimmed.contains("vw")
+                        && !trimmed.contains("vh")
+                        && !trimmed.contains("rem")
+                        && !trimmed.contains("em")
+                        && !trimmed.contains("clamp("),
+                    "Disallowed relative font-size unit: {trimmed}"
+                );
+            }
+        }
     }
 }

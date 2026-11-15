@@ -35,12 +35,13 @@
    - [Prerequisites](#prerequisites)
    - [Compiling from Source](#compiling-from-source)
    - [Running Tests](#running-tests)
-8. [Packaging & Installation](#packaging--installation)
+8. [Debugging](#debugging)
+9. [Packaging & Installation](#packaging--installation)
    - [Windows 11 / 10](#windows-11--10)
    - [macOS](#macos)
    - [Linux](#linux)
-9. [Project Structure](#project-structure)
-10. [License](#license)
+10. [Project Structure](#project-structure)
+11. [License](#license)
 
 ---
 
@@ -59,25 +60,21 @@ Modern web browsers have become monstrous operating systems in their own right, 
 
 Ember provides a clean, modern, Chrome-like visual interface with Windows 11 Mica/Acrylic styling, dark mode support, and an intuitive layout:
 
-```text
-+---------------------------------------------------------------------------------------------------------+
-| [ E Ember ]  [Tab 1: GitHub     x] [Tab 2: Rust Docs    x] [Tab 3: Hacker News   x]  [ + ]     _  [ ]  X|
-+---------------------------------------------------------------------------------------------------------+
-| [<] [>] [R]  [ (🛡️ 14) ]  [🔒 https://news.ycombinator.com                               ] [⭐] [100%] [⚙️]|
-+---------------------------------------------------------------------------------------------------------+
-|                                                                                                         |
-|   Hacker News    new | past | comments | ask | show | jobs | submit                             login   |
-|   ---------------------------------------------------------------------------------------------------   |
-|   1. ^ Rust 1.85 Released (blog.rust-lang.org)                                                          |
-|        412 points by user 4 hours ago | hide | 185 comments                                             |
-|                                                                                                         |
-|   2. ^ Ember Browser: 2.7 MB RAM-efficient web browser (github.com/ember)                              |
-|        298 points by dev 2 hours ago | hide | 94 comments                                               |
-|                                                                                                         |
-|   [... Native Webview Content Rendered Here with Cosmetic Ad Elements Hidden ...]                       |
-|                                                                                                         |
-+---------------------------------------------------------------------------------------------------------+
-```
+<p align="center">
+  <img src="assets/screenshots/hero-browsing.png" alt="Ember Browser active browsing on GitHub with built-in adblocker active" width="100%" />
+</p>
+
+| New Tab (`ember://newtab`) | Omnibox Autocomplete |
+| :---: | :---: |
+| ![Ember New Tab Page](assets/screenshots/newtab.png) | ![Ember Omnibox Autocomplete](assets/screenshots/omnibox.png) |
+
+| Settings (`ember://settings`) | Browsing History (`ember://history`) |
+| :---: | :---: |
+| ![Ember Settings Page](assets/screenshots/settings.png) | ![Ember Browsing History](assets/screenshots/history.png) |
+
+<p align="center">
+  <img src="assets/screenshots/menu.png" alt="Ember Browser App Menu" width="420" />
+</p>
 
 ### Visual Highlights
 
@@ -210,6 +207,11 @@ Measured on Windows 11 (AMD Ryzen 9, 32 GB RAM, NVMe SSD). For detailed audit me
 | **5 Tabs** (Heavy Sites) | **388.5 MB** *(lazy)* / 592 MB | 638.0 MB | 584.2 MB | **-39.1% vs Chrome** |
 | **20 Tabs** (Multi-Tasking) | **400.6 MB** *(lazy)* / 840 MB | 1,178.7 MB | 1,045.0 MB | **-66.0% vs Chrome** |
 
+<p align="center">
+  <img src="assets/screenshots/ram-comparison.png" alt="Windows Task Manager RAM comparison: Ember (417.6 MB) vs Google Chrome (617.6 MB) with 1 tab open on google.com" width="760" /><br>
+  <em>1-tab (<code>google.com</code>) memory comparison in Windows Task Manager: Ember (417.6 MB) vs. Google Chrome (617.6 MB).</em>
+</p>
+
 ### Adblock Match Latency
 
 ```text
@@ -312,6 +314,48 @@ cargo test -- --nocapture
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
+
+---
+
+## Debugging
+
+Ember provides built-in diagnostics in debug builds so UI, omnibox, popup, and animation issues are immediately visible:
+
+### Opening UI WebView DevTools
+
+- **Keyboard shortcut**: Focus the browser toolbar/tab strip and press `F12` or `Ctrl+Shift+I` (`Cmd+Shift+I` on macOS) to open DevTools on the Chrome UI WebView (`chrome.html`).
+- **Startup flag or env var**: Launch with DevTools automatically opened for the Chrome UI WebView:
+
+  ```bash
+  cargo run -- --ui-devtools
+  # or:
+  EMBER_UI_DEVTOOLS=1 cargo run
+  ```
+
+### Debug Logging & UI Error Logs
+
+- **Persistent UI JS error log**: Uncaught exceptions, unhandled promise rejections, `console.error` calls, and UI module initialization failures in both the Chrome UI and popup WebViews are automatically logged to `%LOCALAPPDATA%\Ember\logs\ui_errors.log` on Windows (or `$XDG_DATA_HOME/Ember/logs/ui_errors.log` / `~/Library/Application Support/Ember/logs/ui_errors.log`).
+- **Verbose subsystem tracing**: Set any of these environment variables before starting Ember:
+  - `EMBER_IPC_DEBUG=1`: log all Chrome UI <-> Rust IPC commands.
+  - `EMBER_POPUP_DEBUG=1`: log omnibox/menu popup state transitions, sequence numbers, and focus watchdogs.
+  - `EMBER_TAB_ANIM_DEBUG=1`: log tab reconcile open/close/FLIP animation events.
+
+### Running the Self-Test
+
+Run the end-to-end UI regression self-test from the command line (or navigate to `ember://selftest` in debug builds and click **Run Self-Test**):
+
+```bash
+cargo run -- --selftest
+```
+
+This runs inside an isolated temporary profile directory and verifies with `PASS`/`FAIL`:
+1. UI scripts initialized without errors
+2. Omnibox navigates to a URL
+3. Omnibox returns suggestions for a known history entry
+4. Popup opens and closes
+5. A tab opens with an animation
+6. A tab closes with an animation and its node is removed
+7. DOM tab count equals Rust tab count
 
 ---
 

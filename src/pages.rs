@@ -11,6 +11,7 @@ pub const DOWNLOADS_URL: &str = "ember://downloads";
 pub const SETTINGS_URL: &str = "ember://settings";
 pub const WARNING_URL: &str = "ember://warning";
 pub const ADBLOCK_DEBUG_URL: &str = "ember://adblock-debug";
+pub const SELFTEST_URL: &str = "ember://selftest";
 
 /// Services required to render dynamic internal pages.
 pub struct PageCtx<'a> {
@@ -40,6 +41,8 @@ pub fn canonical_internal_url(url: &str) -> Option<&'static str> {
         "settings" => Some(SETTINGS_URL),
         "warning" => Some(WARNING_URL),
         "adblock-debug" => Some(ADBLOCK_DEBUG_URL),
+        #[cfg(debug_assertions)]
+        "selftest" => Some(SELFTEST_URL),
         _ => Some(NEWTAB_URL),
     }
 }
@@ -109,6 +112,8 @@ pub fn render_internal_page(url: &str, ctx: &PageCtx<'_>) -> Option<(String, Str
             String::from("Adblock Debug"),
             render_adblock_debug_html(ctx.adblocker),
         )),
+        #[cfg(debug_assertions)]
+        SELFTEST_URL => Some((String::from("Self-Test"), render_selftest_html())),
         _ => None,
     }
 }
@@ -172,13 +177,18 @@ const SHARED_INTERNAL_CSS: &str = r#"
     --shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
   }
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
-html, body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+:root {{
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+html, body {{
+  font-family: var(--font-ui);
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
-}
+}}
 a { color: inherit; text-decoration: none; }
 .nav-links {
   display: flex;
@@ -1168,6 +1178,120 @@ fn render_settings_html(
     )
 }
 
+#[cfg(debug_assertions)]
+fn render_selftest_html() -> String {
+    let default_checks = [
+        "UI scripts initialized without errors",
+        "omnibox navigates to a URL",
+        "omnibox returns suggestions for a known history entry",
+        "popup opens and closes",
+        "a tab opens with an animation",
+        "a tab closes with an animation and its node is removed",
+        "DOM tab count equals Rust tab count",
+    ];
+    let mut rows = String::new();
+    for (idx, name) in default_checks.iter().enumerate() {
+        rows.push_str(&format!(
+            r#"<tr data-check="{name_escaped}"><td>{num}</td><td>{name_escaped}</td><td><span class="st-badge st-pending">PENDING</span></td><td class="mono st-detail">-</td></tr>"#,
+            num = idx + 1,
+            name_escaped = escape_html(name),
+        ));
+    }
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Ember Self-Test</title>
+<style>{SHARED_INTERNAL_CSS}{SETTINGS_CSS}
+.st-table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+.st-table th, .st-table td {{ padding: 10px 12px; border-bottom: 1px solid rgba(128,128,128,0.2); text-align: left; vertical-align: middle; }}
+.st-badge {{ display: inline-block; padding: 3px 8px; border-radius: 999px; font-weight: 600; font-size: 11px; letter-spacing: 0.04em; }}
+.st-pending {{ background: rgba(128,128,128,0.18); color: inherit; }}
+.st-pass {{ background: rgba(24,144,64,0.2); color: #1a9c46; }}
+.st-fail {{ background: rgba(215,58,73,0.2); color: #d73a49; }}
+.mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; word-break: break-word; }}
+</style>
+</head>
+<body>
+<div class="page-wrap">
+  <div class="page-header">
+    <h1>Ember UI Self-Test</h1>
+    <div class="nav-links">
+      <button class="pill-btn" onclick="window.ipc && window.ipc.postMessage('settings_action:open:ember://newtab')">New Tab</button>
+      <button class="pill-btn" onclick="window.ipc && window.ipc.postMessage('settings_action:open:ember://adblock-debug')">Adblock Debug</button>
+    </div>
+  </div>
+  <div class="section">
+    <div class="card" style="padding:16px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <div>
+        <div id="st-summary" style="font-weight:600;">Ready to verify UI, omnibox, popup, and tab animations.</div>
+        <div class="status" style="margin-top:4px;">Runs against the live Chrome toolbar DOM, popup WebView, and Rust TabManager.</div>
+      </div>
+      <button id="run-selftest-btn" class="btn primary" onclick="runSelfTest()">Run Self-Test</button>
+    </div>
+  </div>
+  <div class="section">
+    <h2>Checks</h2>
+    <div class="card" style="padding:0;overflow:hidden;">
+      <table class="st-table">
+        <thead><tr><th>#</th><th>Check</th><th>Status</th><th>Details</th></tr></thead>
+        <tbody id="st-body">{rows}</tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<script>
+function runSelfTest() {{
+  var btn = document.getElementById('run-selftest-btn');
+  var summary = document.getElementById('st-summary');
+  if (btn) btn.disabled = true;
+  if (summary) summary.textContent = 'Running 7 checks...';
+  if (window.ipc && typeof window.ipc.postMessage === 'function') {{
+    window.ipc.postMessage('settings_action:run_selftest:');
+  }}
+}}
+window.__emberRenderSelfTestReport = function (report) {{
+  var btn = document.getElementById('run-selftest-btn');
+  var summary = document.getElementById('st-summary');
+  var tbody = document.getElementById('st-body');
+  if (btn) btn.disabled = false;
+  if (!report || !Array.isArray(report.items) || !tbody) return;
+  while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+  var passed = 0;
+  for (var i = 0; i < report.items.length; i++) {{
+    var item = report.items[i] || {{}};
+    if (item.pass) passed += 1;
+    var tr = document.createElement('tr');
+    var tdNum = document.createElement('td');
+    tdNum.textContent = String(i + 1);
+    var tdName = document.createElement('td');
+    tdName.textContent = String(item.name || 'Check');
+    var tdStatus = document.createElement('td');
+    var badge = document.createElement('span');
+    badge.className = 'st-badge ' + (item.pass ? 'st-pass' : 'st-fail');
+    badge.textContent = item.pass ? 'PASS' : 'FAIL';
+    tdStatus.appendChild(badge);
+    var tdDetail = document.createElement('td');
+    tdDetail.className = 'mono st-detail';
+    tdDetail.textContent = String(item.detail || '');
+    tr.appendChild(tdNum);
+    tr.appendChild(tdName);
+    tr.appendChild(tdStatus);
+    tr.appendChild(tdDetail);
+    tbody.appendChild(tr);
+  }}
+  if (summary) {{
+    summary.textContent = passed + '/' + report.items.length + ' checks passed';
+  }}
+}};
+</script>
+</body>
+</html>"#
+    )
+}
+
 fn render_adblock_debug_html(adblocker: &Adblocker) -> String {
     let (tab_id, snapshot) = adblocker.latest_tab_debug_snapshot();
     let updating = adblocker.is_updating();
@@ -1355,6 +1479,19 @@ mod tests {
             canonical_internal_url("ember://warning?url=http%3A%2F%2Fa.com"),
             Some(WARNING_URL)
         );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn test_selftest_internal_page_routing() {
+        assert_eq!(
+            canonical_internal_url("ember://selftest"),
+            Some(SELFTEST_URL)
+        );
+        let html = render_selftest_html();
+        assert!(html.contains("Ember UI Self-Test"));
+        assert!(html.contains("__emberRenderSelfTestReport"));
+        assert!(html.contains("DOM tab count equals Rust tab count"));
     }
 
     #[test]

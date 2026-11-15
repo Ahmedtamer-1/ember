@@ -5,8 +5,30 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$releaseExe = "target\release\ember.exe"
+$oldExe = "target\release\ember.exe.old"
+if (Test-Path $oldExe) {
+    Remove-Item $oldExe -Force -ErrorAction SilentlyContinue
+}
+if (Test-Path $releaseExe) {
+    try {
+        Remove-Item $releaseExe -Force -ErrorAction Stop
+    } catch {
+        $backup = if (-not (Test-Path $oldExe)) {
+            $oldExe
+        } else {
+            "target\release\ember.$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()).old"
+        }
+        Write-Host "Existing ember.exe is locked; renaming it to $backup..."
+        Move-Item -Path $releaseExe -Destination $backup -Force
+    }
+}
+
 Write-Host "Building Ember release binary..."
 cargo build --release
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
 
 $distDir = "target\dist"
 $pkgName = "ember-v$Version-windows-x64"

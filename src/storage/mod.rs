@@ -332,6 +332,7 @@ pub struct Storage {
     webview_data_dir: PathBuf,
     filters_dir: PathBuf,
     downloads_dir: PathBuf,
+    logs_dir: PathBuf,
     db: Arc<Mutex<Option<Connection>>>,
     worker_tx: mpsc::Sender<DbJob>,
     latest_query_id: Arc<AtomicU64>,
@@ -345,15 +346,25 @@ impl Storage {
         Self::with_base_dir(base_dir)
     }
 
+    /// Ensures the default per-user `logs` directory exists and returns its path.
+    pub fn ensure_default_logs_dir() -> io::Result<PathBuf> {
+        let base_dir = platform::resolve_app_data_dir()?;
+        let logs_dir = base_dir.join("logs");
+        fs::create_dir_all(&logs_dir)?;
+        Ok(logs_dir)
+    }
+
     /// Initializes storage rooted at a specific directory (used by `init` and unit tests).
     pub fn with_base_dir(base_dir: PathBuf) -> io::Result<Self> {
         let webview_data_dir = base_dir.join("webview-data");
         let filters_dir = base_dir.join("filters");
         let downloads_dir =
             platform::resolve_downloads_dir().unwrap_or_else(|_| base_dir.join("Downloads"));
+        let logs_dir = base_dir.join("logs");
         fs::create_dir_all(&webview_data_dir)?;
         fs::create_dir_all(&filters_dir)?;
         let _ = fs::create_dir_all(&downloads_dir);
+        fs::create_dir_all(&logs_dir)?;
 
         let db_path = base_dir.join("ember.db");
         let conn = Connection::open(&db_path).ok();
@@ -483,6 +494,7 @@ impl Storage {
             webview_data_dir,
             filters_dir,
             downloads_dir,
+            logs_dir,
             db,
             worker_tx,
             latest_query_id,
@@ -540,6 +552,40 @@ impl Storage {
     /// Returns the user's Downloads directory (`%USERPROFILE%\Downloads` on Windows).
     pub fn downloads_dir(&self) -> &Path {
         &self.downloads_dir
+    }
+
+    /// Returns the directory where browser and UI logs are written (`%LOCALAPPDATA%\Ember\logs`).
+    pub fn logs_dir(&self) -> &Path {
+        &self.logs_dir
+    }
+
+    /// Appends a UI or popup JavaScript error line to `<logs_dir>/ui_errors.log`.
+    pub fn log_ui_js_error(&self, source: &str, detail: &str) {
+        Self::append_ui_error_to_dir(&self.logs_dir, source, detail);
+    }
+
+    /// Appends a formatted error entry to `ui_errors.log` inside `logs_dir`.
+    pub fn append_ui_error_to_dir(logs_dir: &Path, source: &str, detail: &str) {
+        use std::io::Write as _;
+
+        if fs::create_dir_all(logs_dir).is_err() {
+            return;
+        }
+        let log_path = logs_dir.join("ui_errors.log");
+        let sanitized = detail.replace(['\r', '\n'], " ");
+        if let Ok(mut file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            let _ = writeln!(
+                file,
+                "[ts={}] [{}] {}",
+                unix_timestamp_secs(),
+                source,
+                sanitized
+            );
+        }
     }
 
     /// Records a visit to `url` with `title` in the SQLite `history` table synchronously.
@@ -2065,6 +2111,21 @@ mod tests {
         let (path_af, _) = storage.query_omnibox_cached("github.com/ru", true, 8);
         let path_af = path_af.expect("path autofill");
         assert_eq!(path_af.completed_text, "github.com/rust-lang/rust");
+
+        let _ = fs::remove_dir_all(storage.filters_dir().parent().unwrap());
+    }
+
+    #[test]
+    fn test_ui_js_error_log_written_to_logs_dir() {
+        let storage = temp_storage("ui_error_log");
+        storage.log_ui_js_error("ui", "ReferenceError: test is not defined\nline 42");
+        storage.log_ui_js_error("popup", "Unhandled promise rejection");
+
+        let log_path = storage.logs_dir().join("ui_errors.log");
+        assert!(log_path.exists());
+        let contents = fs::read_to_string(&log_path).expect("read ui_errors.log");
+        assert!(contents.contains("[ui] ReferenceError: test is not defined line 42"));
+        assert!(contents.contains("[popup] Unhandled promise rejection"));
 
         let _ = fs::remove_dir_all(storage.filters_dir().parent().unwrap());
     }
