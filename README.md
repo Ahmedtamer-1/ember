@@ -392,7 +392,7 @@ bash scripts/package_macos.sh
 This will:
 1. Compile the release binary.
 2. Build a native `Ember.app` bundle with `Info.plist`, binary, and app icon.
-3. Generate `target/dist/ember-v0.1.0-macos-x64.tar.gz` and (if `hdiutil` is present) a `.dmg` installer.
+3. Generate `target/dist/ember-v0.1.0-macos-<arch>.tar.gz` (`arm64` on Apple Silicon, `x64` on Intel) and (if `hdiutil` is present) a `.dmg` installer.
 4. Includes an `install.sh` script to install `Ember.app` into `/Applications`.
 
 ### Linux

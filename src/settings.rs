@@ -213,7 +213,7 @@ impl BrowserSettings {
                 }
                 ("general" | "", "tab_suspend_minutes") => {
                     if let Ok(mins) = val.parse::<u64>() {
-                        settings.tab_suspend_minutes = mins.min(1440);
+                        settings.tab_suspend_minutes = clamp_suspend_minutes(mins);
                     }
                 }
                 ("general" | "", "tab_animations_enabled") => {
@@ -305,20 +305,35 @@ impl SettingsStore {
     }
 
     /// Returns a snapshot of the current `BrowserSettings`.
+    ///
+    /// A poisoned lock (a panic while another thread held it) still holds the last good
+    /// settings, so the data is recovered rather than replaced with defaults.
     pub fn get(&self) -> BrowserSettings {
-        self.inner.read().map(|g| g.clone()).unwrap_or_default()
+        match self.inner.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 
     /// Mutates the settings in memory and persists the updated `settings.toml` to disk.
+    ///
+    /// If the lock was poisoned, the existing settings are recovered (never reset to defaults)
+    /// so the user's configuration on disk cannot be wiped.
     pub fn update<F>(&self, f: F) -> BrowserSettings
     where
         F: FnOnce(&mut BrowserSettings),
     {
-        let mut snapshot = BrowserSettings::default();
-        if let Ok(mut guard) = self.inner.write() {
+        let snapshot = {
+            let mut guard = match self.inner.write() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    self.inner.clear_poison();
+                    poisoned.into_inner()
+                }
+            };
             f(&mut guard);
-            snapshot = guard.clone();
-        }
+            guard.clone()
+        };
         let _ = fs::write(&self.config_path, snapshot.to_toml_string());
         snapshot
     }
@@ -336,7 +351,7 @@ impl SettingsStore {
         let Some(host) = crate::zoom::extract_host(trimmed) else {
             return false;
         };
-        if host == "localhost" || host == "127.0.0.1" || host == "[::1]" {
+        if is_loopback_host(&host) {
             return false;
         }
         let allowed = self
@@ -357,25 +372,65 @@ impl SettingsStore {
     }
 }
 
+/// Maximum accepted `tab_suspend_minutes` value (24 hours).
+pub const MAX_TAB_SUSPEND_MINUTES: u64 = 1440;
+
+/// Caps a user-provided tab suspend timeout at [`MAX_TAB_SUSPEND_MINUTES`] (`0` = never).
+pub fn clamp_suspend_minutes(minutes: u64) -> u64 {
+    minutes.min(MAX_TAB_SUSPEND_MINUTES)
+}
+
+/// Returns `true` for hosts that always refer to the local machine and are exempt from
+/// HTTPS-Only Mode: `localhost`, `*.localhost`, `127.0.0.0/8`, and `[::1]`.
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.');
+    if host == "localhost" || host.ends_with(".localhost") || host == "[::1]" {
+        return true;
+    }
+    host.parse::<std::net::Ipv4Addr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
 fn strip_toml_comment(line: &str) -> &str {
-    let mut in_quotes = false;
+    // `None` = outside a string, `Some('"')` = basic string, `Some('\'')` = literal string.
+    let mut quote: Option<char> = None;
     let mut escaped = false;
     for (idx, ch) in line.char_indices() {
-        if in_quotes {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_quotes = false;
+        match quote {
+            Some('"') => {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    quote = None;
+                }
             }
-        } else if ch == '"' {
-            in_quotes = true;
-        } else if ch == '#' {
-            return &line[..idx];
+            Some(_) => {
+                if ch == '\'' {
+                    quote = None;
+                }
+            }
+            None => {
+                if ch == '"' || ch == '\'' {
+                    quote = Some(ch);
+                } else if ch == '#' {
+                    return &line[..idx];
+                }
+            }
         }
     }
     line
+}
+
+/// Reads exactly `len` hex digits from `chars` and converts them to a `char`.
+fn read_unicode_escape(chars: &mut std::str::Chars<'_>, len: usize) -> Option<char> {
+    let mut code: u32 = 0;
+    for _ in 0..len {
+        let digit = chars.next()?.to_digit(16)?;
+        code = code.checked_mul(16)?.checked_add(digit)?;
+    }
+    char::from_u32(code)
 }
 
 fn parse_toml_string(val: &str) -> Option<String> {
@@ -383,20 +438,26 @@ fn parse_toml_string(val: &str) -> Option<String> {
     if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
         let inner = &trimmed[1..trimmed.len() - 1];
         let mut out = String::with_capacity(inner.len());
-        let mut escaped = false;
-        for ch in inner.chars() {
-            if escaped {
-                match ch {
-                    'n' => out.push('\n'),
-                    'r' => out.push('\r'),
-                    't' => out.push('\t'),
-                    _ => out.push(ch),
-                }
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else {
+        let mut chars = inner.chars();
+        while let Some(ch) = chars.next() {
+            if ch != '\\' {
                 out.push(ch);
+                continue;
+            }
+            let Some(esc) = chars.next() else {
+                // A lone trailing backslash: keep it rather than dropping data.
+                out.push('\\');
+                break;
+            };
+            match esc {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'b' => out.push('\u{0008}'),
+                'f' => out.push('\u{000C}'),
+                'u' => out.push(read_unicode_escape(&mut chars, 4)?),
+                'U' => out.push(read_unicode_escape(&mut chars, 8)?),
+                other => out.push(other),
             }
         }
         Some(out)
@@ -424,6 +485,7 @@ fn escape_toml_string(input: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", u32::from(c))),
             _ => out.push(ch),
         }
     }
@@ -531,6 +593,116 @@ mod tests {
         assert!(!reloaded.should_intercept_http("http://neverssl.com/page"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_https_only_exempts_loopback_and_localhost_subdomains() {
+        let dir = env::temp_dir().join(format!("ember_settings_loopback_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let store = SettingsStore::with_config_dir(dir.clone()).expect("init settings store");
+        store.update(|s| s.https_only_mode = true);
+
+        assert!(!store.should_intercept_http("http://[::1]:8080/"));
+        assert!(!store.should_intercept_http("http://[::1]/"));
+        assert!(!store.should_intercept_http("http://app.localhost:3000/"));
+        assert!(!store.should_intercept_http("http://LOCALHOST/"));
+        assert!(!store.should_intercept_http("http://127.0.0.1:5000/"));
+        assert!(!store.should_intercept_http("http://127.1.2.3/"));
+        assert!(!store.should_intercept_http("http://user:pw@localhost:8000/"));
+        // Not loopback
+        assert!(store.should_intercept_http("http://localhost.evil.com/"));
+        assert!(store.should_intercept_http("http://127.example.com/"));
+        assert!(store.should_intercept_http("http://[2001:db8::1]/"));
+        // Userinfo must not fool the allowlist host.
+        store.allow_http_for_url("http://neverssl.com/");
+        assert!(store.should_intercept_http("http://neverssl.com@attacker.example/"));
+        assert!(!store.should_intercept_http("http://user@neverssl.com/"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_update_recovers_poisoned_lock_without_wiping_settings() {
+        let dir = env::temp_dir().join(format!("ember_settings_poison_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let store = SettingsStore::with_config_dir(dir.clone()).expect("init settings store");
+        store.update(|s| {
+            s.homepage = String::from("https://my.home.page/");
+            s.search_engine = SearchEngine::Startpage;
+        });
+
+        let inner = Arc::clone(&store.inner);
+        let _ = std::thread::spawn(move || {
+            let _guard = inner.write().expect("lock");
+            panic!("intentional panic to poison the settings lock");
+        })
+        .join();
+        assert!(store.inner.is_poisoned());
+
+        assert_eq!(store.get().homepage, "https://my.home.page/");
+        let updated = store.update(|s| s.https_only_mode = true);
+        assert_eq!(updated.homepage, "https://my.home.page/");
+        assert_eq!(updated.search_engine, SearchEngine::Startpage);
+        assert!(updated.https_only_mode);
+
+        let reloaded = SettingsStore::with_config_dir(dir.clone()).expect("reload");
+        let s = reloaded.get();
+        assert_eq!(s.homepage, "https://my.home.page/");
+        assert_eq!(s.search_engine, SearchEngine::Startpage);
+        assert!(s.https_only_mode);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_clamp_suspend_minutes() {
+        assert_eq!(clamp_suspend_minutes(0), 0);
+        assert_eq!(clamp_suspend_minutes(15), 15);
+        assert_eq!(clamp_suspend_minutes(1440), 1440);
+        assert_eq!(clamp_suspend_minutes(1441), 1440);
+        assert_eq!(clamp_suspend_minutes(u64::MAX), 1440);
+        assert_eq!(
+            BrowserSettings::from_toml_str("[general]\ntab_suspend_minutes = 99999\n")
+                .tab_suspend_minutes,
+            1440
+        );
+    }
+
+    #[test]
+    fn test_homepage_toml_string_roundtrip() {
+        let tricky = [
+            "https://example.com/?q=\"quoted\"",
+            "C:\\Users\\me\\start.html",
+            "https://example.com/path\\",
+            "https://例え.jp/ページ?q=ünïcødé😀",
+            "https://example.com/#anchor 'single' \"double\"",
+            "line\nbreak\ttab\u{1}ctrl\u{7f}",
+        ];
+        for homepage in tricky {
+            let settings = BrowserSettings {
+                homepage: homepage.to_owned(),
+                ..BrowserSettings::default()
+            };
+            let parsed = BrowserSettings::from_toml_str(&settings.to_toml_string());
+            assert_eq!(
+                parsed.homepage, homepage,
+                "roundtrip failed for {homepage:?}"
+            );
+            assert_eq!(
+                parse_toml_string(&format!("\"{}\"", escape_toml_string(homepage))).as_deref(),
+                Some(homepage)
+            );
+        }
+
+        // Hand-written TOML escapes and literal strings.
+        assert_eq!(
+            parse_toml_string("\"caf\\u00E9 \\U0001F600\"").as_deref(),
+            Some("café 😀")
+        );
+        assert_eq!(
+            BrowserSettings::from_toml_str("homepage = 'https://x.com/#a' # comment").homepage,
+            "https://x.com/#a"
+        );
     }
 
     #[test]

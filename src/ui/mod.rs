@@ -151,8 +151,19 @@ pub const PAGE_INIT_SCRIPT: &str = r#"
     }
   });
 
-  window.addEventListener("pointerdown", function () {
+  window.addEventListener("pointerdown", function (e) {
+    if (e && e.isTrusted === false) return;
     post("page_pointer_down");
+  }, true);
+
+  // User activation for the popup blocker (keyboard-initiated link opens, e.g. Enter).
+  var lastActivationPost = 0;
+  window.addEventListener("keydown", function (e) {
+    if (!e || e.isTrusted === false) return;
+    var now = Date.now();
+    if (now - lastActivationPost < 250) return;
+    lastActivationPost = now;
+    post("user_activation");
   }, true);
 
   function notifySpaNav() {
@@ -567,11 +578,212 @@ pub enum PageIpcEvent {
     ShortcutZoomOut,
     ShortcutZoomReset,
     PointerDown,
+    /// Trusted key press inside the page (used by the popup blocker).
+    UserActivation,
     SpaNav(String),
 }
 
-/// Parses an IPC payload emitted inside a tab's page WebView.
+/// Prefix that internal `ember://` pages put in front of privileged IPC messages:
+/// `ember_tok:<token>:<original message>`.
+pub const INTERNAL_IPC_PREFIX: &str = "ember_tok:";
+
+/// Returns the per-process random token that internal `ember://` pages embed in privileged
+/// IPC messages. Web content never sees this value, so it cannot forge privileged messages.
+pub fn internal_ipc_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(generate_ipc_token).as_str()
+}
+
+fn generate_ipc_token() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::fmt::Write as _;
+    use std::hash::{BuildHasher, Hasher};
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let stack_marker = 0u8;
+    let addr = std::ptr::addr_of!(stack_marker) as usize;
+
+    let mut out = String::with_capacity(64);
+    for round in 0u64..4 {
+        // Each `RandomState::new()` carries fresh OS-seeded SipHash keys.
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write_u128(nanos);
+        hasher.write_u32(pid);
+        hasher.write_usize(addr);
+        hasher.write_u64(round);
+        let _ = write!(out, "{:016x}", hasher.finish());
+    }
+    out
+}
+
+/// Trust level of a page IPC message after token verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpcTrust {
+    /// No (valid) internal token: treat as coming from arbitrary web content.
+    Untrusted,
+    /// Carried the correct per-process internal token.
+    InternalToken,
+}
+
+/// Strips the `ember_tok:<token>:` prefix from `raw`. Returns the trust level and the inner
+/// message. A missing or wrong token yields [`IpcTrust::Untrusted`].
+pub fn classify_page_ipc<'a>(raw: &'a str, expected_token: &str) -> (IpcTrust, &'a str) {
+    let trimmed = raw.trim();
+    let Some(rest) = trimmed.strip_prefix(INTERNAL_IPC_PREFIX) else {
+        return (IpcTrust::Untrusted, trimmed);
+    };
+    let Some((token, body)) = rest.split_once(':') else {
+        return (IpcTrust::Untrusted, trimmed);
+    };
+    if !expected_token.is_empty() && constant_time_eq(token.as_bytes(), expected_token.as_bytes()) {
+        (IpcTrust::InternalToken, body.trim())
+    } else {
+        (IpcTrust::Untrusted, body.trim())
+    }
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Returns `true` for page IPC events that change browser state/settings or navigate with
+/// browser privileges; these are only honoured from internal `ember://` pages.
+pub fn is_privileged_page_event(event: &PageIpcEvent) -> bool {
+    matches!(
+        event,
+        PageIpcEvent::SettingsSet { .. }
+            | PageIpcEvent::SettingsAction { .. }
+            | PageIpcEvent::HistoryClear
+            | PageIpcEvent::HistoryDelete(_)
+            | PageIpcEvent::BookmarkRemove(_)
+            | PageIpcEvent::HttpsProceed(_)
+            | PageIpcEvent::InternalNavigate(_)
+    )
+}
+
+/// Returns `true` for keyboard-shortcut / tab-control / navigation events that must only be
+/// honoured when sent by the active (focused) tab.
+pub fn page_event_requires_active_sender(event: &PageIpcEvent) -> bool {
+    matches!(
+        event,
+        PageIpcEvent::ShortcutNewTab
+            | PageIpcEvent::ShortcutCloseTab
+            | PageIpcEvent::ShortcutReopenClosedTab
+            | PageIpcEvent::ShortcutNextTab
+            | PageIpcEvent::ShortcutPrevTab
+            | PageIpcEvent::ShortcutSwitchTabIndex(_)
+            | PageIpcEvent::ShortcutReload
+            | PageIpcEvent::ShortcutBack
+            | PageIpcEvent::ShortcutForward
+            | PageIpcEvent::ShortcutFocusOmnibox
+            | PageIpcEvent::ShortcutToggleBookmark
+            | PageIpcEvent::ShortcutOpenFind
+            | PageIpcEvent::ShortcutZoomIn
+            | PageIpcEvent::ShortcutZoomOut
+            | PageIpcEvent::ShortcutZoomReset
+            | PageIpcEvent::InternalNavigate(_)
+            | PageIpcEvent::HttpsProceed(_)
+            | PageIpcEvent::ContextOpenNewTab(_)
+            | PageIpcEvent::ContextCopyLink(_)
+    )
+}
+
+/// Returns the lowercase scheme of `url` (text before the first `:`), if it looks like one.
+fn url_scheme(url: &str) -> Option<String> {
+    let (scheme, _) = url.trim().split_once(':')?;
+    if scheme.is_empty()
+        || !scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+    {
+        return None;
+    }
+    Some(scheme.to_ascii_lowercase())
+}
+
+/// Returns `true` if a (normalized) navigation target uses a scheme that internal pages may
+/// navigate to: `http`, `https`, `ember`, or `about`. Rejects `file:`, `javascript:`, `data:` etc.
+pub fn is_safe_navigation_target(url: &str) -> bool {
+    matches!(
+        url_scheme(url).as_deref(),
+        Some("http" | "https" | "ember" | "about")
+    )
+}
+
+/// Returns `true` if `url` may be opened in a new tab on behalf of web content
+/// (`window.open`, `target=_blank`, context menu): only `http`, `https`, and `about`.
+pub fn is_safe_web_popup_target(url: &str) -> bool {
+    matches!(url_scheme(url).as_deref(), Some("http" | "https" | "about"))
+}
+
+/// Returns `true` if the IPC source URI reported by the webview is a web page (`http(s)`).
+fn is_web_source_uri(uri: &str) -> bool {
+    matches!(url_scheme(uri).as_deref(), Some("http" | "https"))
+}
+
+/// Parses a page IPC payload and enforces the privilege boundary.
+///
+/// Privileged events ([`is_privileged_page_event`]) are only returned when the payload carries
+/// the correct internal token, the sending tab currently shows an internal `ember://` URL
+/// (`sender_tab_url`), and the webview-reported source URI (`ipc_source_uri`) is not an
+/// `http(s)` page. `InternalNavigate` targets are additionally restricted to safe schemes.
+pub fn parse_page_ipc_event_checked(
+    raw: &str,
+    expected_token: &str,
+    sender_tab_url: Option<&str>,
+    ipc_source_uri: &str,
+) -> Option<PageIpcEvent> {
+    let (trust, body) = classify_page_ipc(raw, expected_token);
+    let event = parse_page_ipc_body(body)?;
+    if !is_privileged_page_event(&event) {
+        return Some(event);
+    }
+    let sender_internal = sender_tab_url.is_some_and(crate::pages::is_internal_url);
+    if trust != IpcTrust::InternalToken || !sender_internal || is_web_source_uri(ipc_source_uri) {
+        eprintln!(
+            "[ember][page-ipc] rejected privileged message from untrusted sender (tab url={:?})",
+            sender_tab_url.unwrap_or("")
+        );
+        return None;
+    }
+    if let PageIpcEvent::HttpsProceed(target) = &event {
+        if !matches!(url_scheme(target).as_deref(), Some("http" | "https")) {
+            return None;
+        }
+    }
+    // `InternalNavigate` targets are raw omnibox-style input (e.g. new-tab search box text);
+    // they are normalized and scheme-checked with `resolve_internal_navigation` before use.
+    Some(event)
+}
+
+/// Normalizes a navigation target requested by an internal page (`navigate:<input>`,
+/// `settings_action:open:<input>`) and returns it only if its scheme is allowed
+/// (`http`, `https`, `ember`, `about`). `file:`, `javascript:`, `data:` etc. yield `None`.
+pub fn resolve_internal_navigation(raw: &str, engine: SearchEngine) -> Option<String> {
+    let normalized = normalize_omnibox_input(raw, engine);
+    if is_safe_navigation_target(&normalized) {
+        Some(normalized)
+    } else {
+        eprintln!("[ember][page-ipc] rejected internal navigation to unsafe scheme");
+        None
+    }
+}
+
+/// Parses an IPC payload emitted inside a tab's page WebView as *untrusted* web content:
+/// privileged events (settings, history/bookmark edits, internal navigation, HTTPS bypass)
+/// are never returned. Use [`parse_page_ipc_event_checked`] for messages from internal pages.
 pub fn parse_page_ipc_event(raw: &str) -> Option<PageIpcEvent> {
+    parse_page_ipc_body(raw.trim()).filter(|event| !is_privileged_page_event(event))
+}
+
+fn parse_page_ipc_body(raw: &str) -> Option<PageIpcEvent> {
     let trimmed = raw.trim();
     match trimmed {
         "shortcut:new_tab" => Some(PageIpcEvent::ShortcutNewTab),
@@ -591,6 +803,7 @@ pub fn parse_page_ipc_event(raw: &str) -> Option<PageIpcEvent> {
         "ctx_inspect:" => Some(PageIpcEvent::ContextInspect),
         "history_clear:" => Some(PageIpcEvent::HistoryClear),
         "page_pointer_down" => Some(PageIpcEvent::PointerDown),
+        "user_activation" => Some(PageIpcEvent::UserActivation),
         "first_paint" => Some(PageIpcEvent::FirstPaint),
         _ => {
             if let Some(idx_str) = trimmed.strip_prefix("shortcut:tab_index:") {
@@ -852,6 +1065,12 @@ pub fn normalize_omnibox_input(input: &str, engine: SearchEngine) -> String {
         let encoded = url_encode_query(trimmed);
         engine.build_search_url(&encoded)
     }
+}
+
+/// Normalizes a homepage setting value: `example.com` → `https://example.com`, empty →
+/// `ember://newtab`, internal pages canonicalized (same rules as the omnibox).
+pub fn normalize_homepage(value: &str, engine: SearchEngine) -> String {
+    normalize_omnibox_input(value, engine)
 }
 
 /// Ensures `suggestions` has a default navigable/search row at index 0 for any non-empty query.
@@ -1705,34 +1924,236 @@ mod tests {
         );
     }
 
+    fn internal(msg: &str) -> String {
+        format!("{INTERNAL_IPC_PREFIX}{}:{msg}", internal_ipc_token())
+    }
+
+    fn parse_from_settings(msg: &str) -> Option<PageIpcEvent> {
+        parse_page_ipc_event_checked(
+            &internal(msg),
+            internal_ipc_token(),
+            Some("ember://settings"),
+            "about:blank",
+        )
+    }
+
     #[test]
     fn test_parse_settings_page_ipc_events() {
         assert_eq!(
-            parse_page_ipc_event("settings_set:theme=dark"),
+            parse_from_settings("settings_set:theme=dark"),
             Some(PageIpcEvent::SettingsSet {
                 key: String::from("theme"),
                 value: String::from("dark"),
             })
         );
         assert_eq!(
-            parse_page_ipc_event("settings_action:clear_data:history,cookies"),
+            parse_from_settings("settings_action:clear_data:history,cookies"),
             Some(PageIpcEvent::SettingsAction {
                 name: String::from("clear_data"),
                 arg: String::from("history,cookies"),
             })
         );
         assert_eq!(
-            parse_page_ipc_event("settings_action:update_filters"),
+            parse_from_settings("settings_action:update_filters"),
             Some(PageIpcEvent::SettingsAction {
                 name: String::from("update_filters"),
                 arg: String::new(),
             })
         );
         assert_eq!(
-            parse_page_ipc_event("https_proceed:http://example.com/insecure"),
+            parse_page_ipc_event_checked(
+                &internal("https_proceed:http://example.com/insecure"),
+                internal_ipc_token(),
+                Some("ember://warning?url=http%3A%2F%2Fexample.com%2Finsecure"),
+                "about:blank",
+            ),
             Some(PageIpcEvent::HttpsProceed(String::from(
                 "http://example.com/insecure"
             )))
+        );
+    }
+
+    #[test]
+    fn test_internal_ipc_token_is_stable_and_random_looking() {
+        let token = internal_ipc_token();
+        assert!(token.len() >= 32);
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(token, internal_ipc_token());
+        assert_ne!(generate_ipc_token(), generate_ipc_token());
+    }
+
+    #[test]
+    fn test_classify_page_ipc_token() {
+        let token = "abc123";
+        assert_eq!(
+            classify_page_ipc("ember_tok:abc123:history_clear:", token),
+            (IpcTrust::InternalToken, "history_clear:")
+        );
+        assert_eq!(
+            classify_page_ipc("ember_tok:wrong:history_clear:", token).0,
+            IpcTrust::Untrusted
+        );
+        assert_eq!(
+            classify_page_ipc("history_clear:", token),
+            (IpcTrust::Untrusted, "history_clear:")
+        );
+        assert_eq!(
+            classify_page_ipc("ember_tok:abc123", token).0,
+            IpcTrust::Untrusted
+        );
+        // Empty expected token never matches.
+        assert_eq!(
+            classify_page_ipc("ember_tok::history_clear:", "").0,
+            IpcTrust::Untrusted
+        );
+    }
+
+    #[test]
+    fn test_privileged_ipc_requires_token_and_internal_sender() {
+        let tok = internal_ipc_token();
+        let privileged = [
+            "settings_set:homepage=https://evil.example",
+            "settings_action:clear_data:history",
+            "history_clear:",
+            "history_delete:https://a.example",
+            "bookmark_remove:https://a.example",
+            "https_proceed:http://a.example",
+            "navigate:https://a.example",
+        ];
+        for msg in privileged {
+            // Valid token + internal URL: accepted.
+            assert!(
+                parse_page_ipc_event_checked(&internal(msg), tok, Some("ember://history"), "")
+                    .is_some(),
+                "{msg} should be accepted from an internal page"
+            );
+            // Missing token: rejected even from an internal page.
+            assert_eq!(
+                parse_page_ipc_event_checked(msg, tok, Some("ember://history"), ""),
+                None,
+                "{msg} without token must be rejected"
+            );
+            // Wrong token: rejected.
+            let forged = format!("{INTERNAL_IPC_PREFIX}deadbeef:{msg}");
+            assert_eq!(
+                parse_page_ipc_event_checked(&forged, tok, Some("ember://history"), ""),
+                None
+            );
+            // Valid token but sender tab is a web page: rejected.
+            assert_eq!(
+                parse_page_ipc_event_checked(
+                    &internal(msg),
+                    tok,
+                    Some("https://evil.example/"),
+                    ""
+                ),
+                None
+            );
+            // Valid token + internal tab URL but webview reports an http(s) source: rejected.
+            assert_eq!(
+                parse_page_ipc_event_checked(
+                    &internal(msg),
+                    tok,
+                    Some("ember://history"),
+                    "https://evil.example/"
+                ),
+                None
+            );
+            // Unknown sender tab: rejected.
+            assert_eq!(
+                parse_page_ipc_event_checked(&internal(msg), tok, None, ""),
+                None
+            );
+            // The untrusted parser never yields privileged events.
+            assert_eq!(parse_page_ipc_event(msg), None);
+        }
+
+        // Non-privileged events work without a token from any page.
+        assert_eq!(
+            parse_page_ipc_event_checked("scroll:1,2", tok, Some("https://a.example"), ""),
+            Some(PageIpcEvent::Scroll(1.0, 2.0))
+        );
+        assert_eq!(
+            parse_page_ipc_event("user_activation"),
+            Some(PageIpcEvent::UserActivation)
+        );
+        // HTTPS bypass must target http(s).
+        assert_eq!(
+            parse_page_ipc_event_checked(
+                &internal("https_proceed:file:///C:/secret.txt"),
+                tok,
+                Some("ember://warning"),
+                ""
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_internal_navigation_scheme_filter() {
+        let e = SearchEngine::DuckDuckGo;
+        assert_eq!(
+            resolve_internal_navigation("example.com", e),
+            Some(String::from("https://example.com"))
+        );
+        assert_eq!(
+            resolve_internal_navigation("ember://settings", e),
+            Some(String::from("ember://settings"))
+        );
+        assert_eq!(
+            resolve_internal_navigation("about:blank", e),
+            Some(String::from("about:blank"))
+        );
+        assert!(resolve_internal_navigation("rust lang", e).is_some());
+        assert_eq!(
+            resolve_internal_navigation("file:///C:/Windows/win.ini", e),
+            None
+        );
+        assert_eq!(resolve_internal_navigation("FILE://server/share", e), None);
+
+        assert!(is_safe_navigation_target("https://a.example"));
+        assert!(is_safe_navigation_target("HTTP://a.example"));
+        assert!(!is_safe_navigation_target("javascript:alert(1)"));
+        assert!(!is_safe_navigation_target("data:text/html,hi"));
+        assert!(!is_safe_navigation_target("file:///etc/passwd"));
+        assert!(!is_safe_navigation_target("no scheme here"));
+
+        assert!(is_safe_web_popup_target("https://a.example"));
+        assert!(!is_safe_web_popup_target("ember://settings"));
+        assert!(!is_safe_web_popup_target("file:///C:/x"));
+    }
+
+    #[test]
+    fn test_shortcut_events_require_active_sender() {
+        assert!(page_event_requires_active_sender(
+            &PageIpcEvent::ShortcutCloseTab
+        ));
+        assert!(page_event_requires_active_sender(
+            &PageIpcEvent::ShortcutZoomIn
+        ));
+        assert!(page_event_requires_active_sender(
+            &PageIpcEvent::ContextCopyLink(String::from("x"))
+        ));
+        assert!(page_event_requires_active_sender(
+            &PageIpcEvent::InternalNavigate(String::from("x"))
+        ));
+        assert!(!page_event_requires_active_sender(
+            &PageIpcEvent::FirstPaint
+        ));
+        assert!(!page_event_requires_active_sender(&PageIpcEvent::Scroll(
+            0.0, 0.0
+        )));
+    }
+
+    #[test]
+    fn test_normalize_homepage() {
+        let e = SearchEngine::DuckDuckGo;
+        assert_eq!(normalize_homepage("example.com", e), "https://example.com");
+        assert_eq!(normalize_homepage("", e), "ember://newtab");
+        assert_eq!(normalize_homepage("  ", e), "ember://newtab");
+        assert_eq!(
+            normalize_homepage("ember://settings", e),
+            "ember://settings"
         );
     }
 

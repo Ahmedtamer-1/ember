@@ -323,7 +323,79 @@ enum DbJob {
         search_engine: SearchEngine,
         reply: SuggestReply,
     },
+    /// Deletes every history row. Runs on the worker so it is ordered after any
+    /// previously enqueued `RecordVisit` / `MarkTyped` jobs.
+    ClearHistory(mpsc::Sender<()>),
+    /// Deletes a single history row, ordered after previously enqueued writes.
+    DeleteHistoryUrl {
+        url: String,
+        done: mpsc::Sender<()>,
+    },
     Flush(mpsc::Sender<()>),
+}
+
+/// Online suggestion request handed from the DB worker to the dedicated network thread,
+/// so slow suggestion endpoints never block history writes.
+struct OnlineSuggestJob {
+    query_id: u64,
+    query: String,
+    room: usize,
+    search_engine: SearchEngine,
+    local: Vec<OmniboxSuggestion>,
+    reply: SuggestReply,
+}
+
+/// How long a synchronous caller waits for the DB worker to apply a queued job.
+const WORKER_SYNC_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Merges online search phrases into `suggestions`, skipping duplicates of existing rows.
+fn merge_online_suggestions(
+    suggestions: &mut Vec<OmniboxSuggestion>,
+    online: Vec<String>,
+    search_engine: SearchEngine,
+) {
+    for phrase in online {
+        let search_url = search_engine.build_search_url(&phrase);
+        if !suggestions
+            .iter()
+            .any(|s| s.title.eq_ignore_ascii_case(&phrase) || s.url == search_url)
+        {
+            suggestions.push(OmniboxSuggestion {
+                kind: SuggestionKind::Search,
+                title: phrase,
+                url: search_url,
+                score: 10.0,
+                is_default: false,
+            });
+        }
+    }
+}
+
+/// Runs on the `ember-suggest` thread: fetches online suggestions for the newest pending
+/// request, dropping superseded ones without touching the network.
+fn run_online_suggest_loop<F>(
+    rx: mpsc::Receiver<OnlineSuggestJob>,
+    latest_q: Arc<AtomicU64>,
+    fetch: F,
+) where
+    F: Fn(&str, SearchEngine, usize) -> Vec<String>,
+{
+    while let Ok(mut job) = rx.recv() {
+        // Collapse any backlog down to the most recent request.
+        while let Ok(newer) = rx.try_recv() {
+            job = newer;
+        }
+        if job.query_id < latest_q.load(Ordering::Relaxed) {
+            continue;
+        }
+        let online = fetch(&job.query, job.search_engine, job.room);
+        if job.query_id < latest_q.load(Ordering::Relaxed) {
+            continue;
+        }
+        let mut suggestions = job.local;
+        merge_online_suggestions(&mut suggestions, online, job.search_engine);
+        (job.reply)(job.query_id, suggestions);
+    }
 }
 
 /// Persistent and default browser configuration and SQLite storage.
@@ -376,6 +448,20 @@ impl Storage {
         let latest_query_id = Arc::new(AtomicU64::new(0));
         let omnibox_cache = Arc::new(RwLock::new(OmniboxCache::default()));
         let (worker_tx, worker_rx) = mpsc::channel::<DbJob>();
+
+        // Dedicated network thread for online suggestions (exits when the DB worker exits).
+        let (online_tx, online_rx) = mpsc::channel::<OnlineSuggestJob>();
+        let online_latest_q = Arc::clone(&latest_query_id);
+        let online_thread_ok = thread::Builder::new()
+            .name(String::from("ember-suggest"))
+            .spawn(move || {
+                run_online_suggest_loop(
+                    online_rx,
+                    online_latest_q,
+                    fetch_online_search_suggestions,
+                );
+            })
+            .is_ok();
 
         let worker_db = Arc::clone(&db);
         let worker_latest_q = Arc::clone(&latest_query_id);
@@ -439,14 +525,14 @@ impl Storage {
                             if query_id < worker_latest_q.load(Ordering::Relaxed) {
                                 continue;
                             }
-                            let mut suggestions = rank_suggestions(
+                            let suggestions = rank_suggestions(
                                 &query,
                                 &history,
                                 &bookmarks,
                                 unix_timestamp_secs(),
                                 limit,
                             );
-                            if online_enabled && suggestions.len() < limit {
+                            if online_enabled && online_thread_ok && suggestions.len() < limit {
                                 let trimmed = query.trim();
                                 let lower = trimmed.to_ascii_lowercase();
                                 let is_url_like = lower.starts_with("http://")
@@ -454,32 +540,39 @@ impl Storage {
                                     || lower.starts_with("ember://");
                                 if !is_url_like && trimmed.chars().count() >= 2 {
                                     let room = limit.saturating_sub(suggestions.len()).min(4);
-                                    let online = fetch_online_search_suggestions(
-                                        trimmed,
-                                        search_engine,
+                                    // Hand the network fetch to the suggestion thread so the DB
+                                    // worker stays free for history writes.
+                                    let job = OnlineSuggestJob {
+                                        query_id,
+                                        query: trimmed.to_owned(),
                                         room,
-                                    );
-                                    if query_id < worker_latest_q.load(Ordering::Relaxed) {
-                                        continue;
+                                        search_engine,
+                                        local: suggestions,
+                                        reply,
+                                    };
+                                    if let Err(mpsc::SendError(job)) = online_tx.send(job) {
+                                        (job.reply)(job.query_id, job.local);
                                     }
-                                    for phrase in online {
-                                        let search_url = search_engine.build_search_url(&phrase);
-                                        if !suggestions.iter().any(|s| {
-                                            s.title.eq_ignore_ascii_case(&phrase)
-                                                || s.url == search_url
-                                        }) {
-                                            suggestions.push(OmniboxSuggestion {
-                                                kind: SuggestionKind::Search,
-                                                title: phrase,
-                                                url: search_url,
-                                                score: 10.0,
-                                                is_default: false,
-                                            });
-                                        }
-                                    }
+                                    continue;
                                 }
                             }
                             reply(query_id, suggestions);
+                        }
+                        DbJob::ClearHistory(done) => {
+                            if let Ok(guard) = worker_db.lock() {
+                                if let Some(ref c) = *guard {
+                                    execute_clear_history(c);
+                                }
+                            }
+                            let _ = done.send(());
+                        }
+                        DbJob::DeleteHistoryUrl { url, done } => {
+                            if let Ok(guard) = worker_db.lock() {
+                                if let Some(ref c) = *guard {
+                                    execute_delete_history_url(c, &url);
+                                }
+                            }
+                            let _ = done.send(());
                         }
                         DbJob::Flush(tx) => {
                             let _ = tx.send(());
@@ -727,6 +820,16 @@ impl Storage {
         }
     }
 
+    /// Test helper: blocks (without a timeout) until every previously queued job has run, so
+    /// tests stay deterministic on heavily loaded machines.
+    #[cfg(test)]
+    fn flush_worker_blocking(&self) {
+        let (tx, rx) = mpsc::channel();
+        if self.worker_tx.send(DbJob::Flush(tx)).is_ok() {
+            let _ = rx.recv();
+        }
+    }
+
     /// Returns up to `limit` most recently visited pages ordered by `last_visited_at DESC`.
     pub fn recent_history(&self, limit: usize) -> Vec<HistoryEntry> {
         let mut results = Vec::new();
@@ -788,27 +891,47 @@ impl Storage {
     }
 
     /// Deletes a single URL from browsing history and the in-memory omnibox cache.
+    ///
+    /// The delete is routed through the background DB worker so it is strictly ordered after any
+    /// `record_visit_async` / `mark_url_typed_async` jobs already queued for the same URL (which
+    /// would otherwise re-insert the row). Blocks until the worker has applied it (bounded by a
+    /// timeout); falls back to a direct delete if the worker is gone.
     pub fn delete_history_url(&self, url: &str) {
         let trimmed = url.trim();
-        if let Ok(guard) = self.db.lock() {
-            if let Some(ref conn) = *guard {
-                let _ = conn.execute("DELETE FROM history WHERE url = ?1", params![trimmed]);
-            }
-        }
+        // Update the cache first: every earlier async write already touched it, so the cache
+        // reflects the same ordering as the worker queue.
         if let Ok(mut cache) = self.omnibox_cache.write() {
             cache.remove_history_url(trimmed);
+        }
+        let (done_tx, done_rx) = mpsc::channel();
+        let job = DbJob::DeleteHistoryUrl {
+            url: trimmed.to_owned(),
+            done: done_tx,
+        };
+        if self.worker_tx.send(job).is_ok() {
+            let _ = done_rx.recv_timeout(WORKER_SYNC_TIMEOUT);
+        } else if let Ok(guard) = self.db.lock() {
+            if let Some(ref conn) = *guard {
+                execute_delete_history_url(conn, trimmed);
+            }
         }
     }
 
     /// Clears all browsing history from SQLite and the in-memory omnibox cache.
+    ///
+    /// Like [`Storage::delete_history_url`], the delete is queued on the DB worker behind any
+    /// pending async history writes so cleared entries cannot reappear afterwards.
     pub fn clear_history(&self) {
-        if let Ok(guard) = self.db.lock() {
-            if let Some(ref conn) = *guard {
-                let _ = conn.execute("DELETE FROM history", []);
-            }
-        }
         if let Ok(mut cache) = self.omnibox_cache.write() {
             cache.clear_history();
+        }
+        let (done_tx, done_rx) = mpsc::channel();
+        if self.worker_tx.send(DbJob::ClearHistory(done_tx)).is_ok() {
+            let _ = done_rx.recv_timeout(WORKER_SYNC_TIMEOUT);
+        } else if let Ok(guard) = self.db.lock() {
+            if let Some(ref conn) = *guard {
+                execute_clear_history(conn);
+            }
         }
     }
 
@@ -992,6 +1115,16 @@ fn execute_record_visit(conn: &Connection, url: &str, title: &str, now: i64) {
     );
 }
 
+fn execute_clear_history(conn: &Connection) {
+    let _ = conn.execute("DELETE FROM history", []);
+}
+
+fn execute_delete_history_url(conn: &Connection, url: &str) {
+    let _ = conn.execute("DELETE FROM history WHERE url = ?1", params![url]);
+}
+
+/// Bumps only `typed_count` for an existing row (the visit itself is recorded separately by
+/// `execute_record_visit`); inserts a fresh row with `visit_count = 1` only if the URL is missing.
 fn execute_mark_typed(conn: &Connection, url: &str, now: i64) {
     let _ = conn.execute(
         "INSERT INTO history (url, title, visit_count, typed_count, last_visited_at)
@@ -1627,6 +1760,43 @@ mod platform {
             lpdw_number_of_bytes_read: *mut u32,
         ) -> i32;
         fn InternetCloseHandle(h_internet: isize) -> i32;
+        fn InternetSetOptionW(
+            h_internet: isize,
+            dw_option: u32,
+            lp_buffer: *const core::ffi::c_void,
+            dw_buffer_length: u32,
+        ) -> i32;
+    }
+
+    /// Per-operation timeout for online suggestion requests.
+    const HTTP_TIMEOUT_MS: u32 = 3000;
+
+    /// Applies connect/send/receive timeouts to a WinINet session handle so a slow or
+    /// unresponsive suggestion endpoint cannot stall the calling thread indefinitely.
+    fn apply_timeouts(h_inet: isize) {
+        const INTERNET_OPTION_CONNECT_TIMEOUT: u32 = 2;
+        const INTERNET_OPTION_SEND_TIMEOUT: u32 = 5;
+        const INTERNET_OPTION_RECEIVE_TIMEOUT: u32 = 6;
+        const INTERNET_OPTION_DATA_SEND_TIMEOUT: u32 = 7;
+        const INTERNET_OPTION_DATA_RECEIVE_TIMEOUT: u32 = 8;
+        let timeout: u32 = HTTP_TIMEOUT_MS;
+        for option in [
+            INTERNET_OPTION_CONNECT_TIMEOUT,
+            INTERNET_OPTION_SEND_TIMEOUT,
+            INTERNET_OPTION_RECEIVE_TIMEOUT,
+            INTERNET_OPTION_DATA_SEND_TIMEOUT,
+            INTERNET_OPTION_DATA_RECEIVE_TIMEOUT,
+        ] {
+            // SAFETY: `timeout` is a live u32 for the duration of the call and the length matches.
+            unsafe {
+                InternetSetOptionW(
+                    h_inet,
+                    option,
+                    (&timeout as *const u32).cast(),
+                    std::mem::size_of::<u32>() as u32,
+                );
+            }
+        }
     }
 
     pub fn http_get_utf8(url: &str) -> Option<String> {
@@ -1649,6 +1819,7 @@ mod platform {
         if h_inet == 0 {
             return None;
         }
+        apply_timeouts(h_inet);
         let h_url = unsafe {
             InternetOpenUrlW(
                 h_inet,
@@ -1797,11 +1968,11 @@ mod tests {
         assert_eq!(most[1].url, "https://docs.rs");
         assert_eq!(most[1].visit_count, 1);
 
-        storage.update_visit_title("https://docs.rs", "Docs.rs â€” Rust Crate Docs");
+        storage.update_visit_title("https://docs.rs", "Docs.rs Ã¢â‚¬â€ Rust Crate Docs");
         let updated = storage.recent_history(10);
         assert!(updated
             .iter()
-            .any(|e| e.url == "https://docs.rs" && e.title == "Docs.rs â€” Rust Crate Docs"));
+            .any(|e| e.url == "https://docs.rs" && e.title == "Docs.rs Ã¢â‚¬â€ Rust Crate Docs"));
 
         storage.clear_history();
         assert!(storage.recent_history(10).is_empty());
@@ -1894,7 +2065,7 @@ mod tests {
         storage.record_visit_async("https://docs.rs/tokio", "New Tab");
         storage.record_visit_async("https://docs.rs/tokio", "tokio - Rust");
         storage.update_visit_title_async("https://docs.rs/tokio", "Tokio Crate Docs");
-        storage.flush_worker();
+        storage.flush_worker_blocking();
 
         let entries = storage.recent_history(10);
         assert_eq!(entries.len(), 1);
@@ -2050,7 +2221,7 @@ mod tests {
         let storage = temp_storage("autofill_cache");
         storage.record_visit_async("https://www.github.com/torvalds/linux", "Linux");
         storage.mark_url_typed_async("https://www.github.com/torvalds/linux");
-        storage.flush_worker();
+        storage.flush_worker_blocking();
 
         let (af, suggestions) = storage.query_omnibox_cached("gith", true, 8);
         let af = af.expect("cached autofill");
@@ -2081,7 +2252,7 @@ mod tests {
         for (url, title) in sites {
             storage.record_visit_async(url, title);
         }
-        storage.flush_worker();
+        storage.flush_worker_blocking();
 
         let expected = [
             ("yout", "youtube.com", "https://www.youtube.com/"),
@@ -2113,6 +2284,142 @@ mod tests {
         assert_eq!(path_af.completed_text, "github.com/rust-lang/rust");
 
         let _ = fs::remove_dir_all(storage.filters_dir().parent().unwrap());
+    }
+
+    fn db_counts(storage: &Storage, url: &str) -> Option<(i64, i64)> {
+        let guard = storage.db.lock().expect("db lock");
+        let conn = guard.as_ref().expect("db open");
+        conn.query_row(
+            "SELECT visit_count, typed_count FROM history WHERE url = ?1",
+            params![url],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .ok()
+    }
+
+    fn cache_counts(storage: &Storage, url: &str) -> Option<(i64, i64)> {
+        let cache = storage.omnibox_cache.read().expect("cache lock");
+        cache
+            .entries
+            .get(url)
+            .map(|e| (e.visit_count, e.typed_count))
+    }
+
+    #[test]
+    fn test_clear_history_is_ordered_after_pending_async_writes() {
+        let storage = temp_storage("clear_after_async");
+        // Enqueue many async writes and clear immediately, without flushing first.
+        // Kept small so the queued SQLite writes finish well within the flush timeout.
+        for i in 0..20 {
+            let url = format!("https://example{}.com/page", i % 7);
+            storage.record_visit_async(&url, "Example");
+            storage.mark_url_typed_async(&url);
+        }
+        storage.clear_history();
+        storage.flush_worker_blocking();
+
+        assert!(storage.recent_history(100).is_empty());
+        assert!(storage.most_visited(100).is_empty());
+        let (af, suggestions) = storage.query_omnibox_cached("example", true, 8);
+        assert!(af.is_none());
+        assert!(suggestions.is_empty());
+
+        // Visits recorded after the clear are kept.
+        storage.record_visit_async("https://after.example.org/", "After");
+        storage.flush_worker_blocking();
+        assert_eq!(storage.recent_history(10).len(), 1);
+
+        let _ = fs::remove_dir_all(storage.filters_dir().parent().unwrap());
+    }
+
+    #[test]
+    fn test_delete_history_url_is_ordered_after_pending_async_writes() {
+        let storage = temp_storage("delete_after_async");
+        storage.record_visit_async("https://keep.example.com/", "Keep");
+        for _ in 0..10 {
+            storage.record_visit_async("https://gone.example.com/", "Gone");
+            storage.mark_url_typed_async("https://gone.example.com/");
+        }
+        storage.delete_history_url("https://gone.example.com/");
+        storage.flush_worker_blocking();
+
+        let entries = storage.recent_history(10);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].url, "https://keep.example.com/");
+        assert!(cache_counts(&storage, "https://gone.example.com/").is_none());
+
+        let _ = fs::remove_dir_all(storage.filters_dir().parent().unwrap());
+    }
+
+    #[test]
+    fn test_mark_typed_after_visit_only_bumps_typed_count() {
+        let storage = temp_storage("mark_typed_counts");
+        let url = "https://typed.example.com/";
+
+        storage.record_visit_async(url, "Typed");
+        storage.mark_url_typed_async(url);
+        storage.flush_worker_blocking();
+        assert_eq!(db_counts(&storage, url), Some((1, 1)));
+        assert_eq!(cache_counts(&storage, url), Some((1, 1)));
+
+        // Missing row: mark_typed inserts with visit_count 1.
+        let fresh = "https://fresh.example.com/";
+        storage.mark_url_typed_async(fresh);
+        storage.flush_worker_blocking();
+        assert_eq!(db_counts(&storage, fresh), Some((1, 1)));
+        assert_eq!(cache_counts(&storage, fresh), Some((1, 1)));
+
+        let _ = fs::remove_dir_all(storage.filters_dir().parent().unwrap());
+    }
+
+    #[test]
+    fn test_online_suggest_loop_skips_stale_and_merges() {
+        let latest = Arc::new(AtomicU64::new(0));
+        let (job_tx, job_rx) = mpsc::channel::<OnlineSuggestJob>();
+        let (reply_tx, reply_rx) = mpsc::channel::<(u64, Vec<OmniboxSuggestion>)>();
+
+        let local = vec![OmniboxSuggestion {
+            kind: SuggestionKind::History,
+            title: String::from("rust lang"),
+            url: String::from("https://rust-lang.org/"),
+            score: 1000.0,
+            is_default: false,
+        }];
+        for (id, query) in [(1u64, "ru"), (2u64, "rus")] {
+            let tx = reply_tx.clone();
+            job_tx
+                .send(OnlineSuggestJob {
+                    query_id: id,
+                    query: query.to_owned(),
+                    room: 4,
+                    search_engine: SearchEngine::DuckDuckGo,
+                    local: local.clone(),
+                    reply: Box::new(move |qid, items| {
+                        let _ = tx.send((qid, items));
+                    }),
+                })
+                .expect("queue job");
+        }
+        latest.store(2, Ordering::Relaxed);
+        drop(job_tx);
+        drop(reply_tx);
+
+        let fetch_calls = Arc::new(AtomicU64::new(0));
+        let calls = Arc::clone(&fetch_calls);
+        run_online_suggest_loop(job_rx, Arc::clone(&latest), move |q, _engine, _room| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            vec![format!("{q}t"), String::from("RUST LANG")]
+        });
+
+        let replies: Vec<_> = reply_rx.iter().collect();
+        assert_eq!(replies.len(), 1, "stale query 1 must be dropped");
+        assert_eq!(fetch_calls.load(Ordering::Relaxed), 1);
+        let (qid, items) = &replies[0];
+        assert_eq!(*qid, 2);
+        // Local row kept, duplicate phrase (case-insensitive) skipped, new phrase appended.
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].title, "rust");
+        assert_eq!(items[1].kind, SuggestionKind::Search);
     }
 
     #[test]

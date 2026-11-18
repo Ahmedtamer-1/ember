@@ -1,6 +1,48 @@
 use ember::adblock::{
-    extract_normalized_host, extract_normalized_host_str, map_webview2_resource_context, Adblocker,
+    build_document_start_preload_script, classify_web_request, decode_data_url,
+    extract_normalized_host, extract_normalized_host_str, frame_cosmetic_script,
+    map_webview2_resource_context, parse_frame_cosmetic_message, Adblocker, TopLevelDocState,
 };
+
+#[test]
+fn test_integration_main_frame_vs_iframe_blocking() {
+    // A `$subdocument` rule must not block a top-level navigation to the same host.
+    let blocker = Adblocker::from_rules(&["||widgets.example.net^$subdocument,third-party"]);
+
+    let mut state = TopLevelDocState::default();
+    state.commit("https://news.example.com/");
+
+    // Iframe on the news page: classified as a third-party subdocument and blocked.
+    let iframe = classify_web_request(1, "https://widgets.example.net/embed", &state, String::new);
+    assert_eq!(iframe.request_type, "subdocument");
+    assert!(blocker.check_network_request(
+        "https://widgets.example.net/embed",
+        &iframe.source_url,
+        iframe.request_type
+    ));
+
+    // User navigates the tab to the widget host: WebView2's Source is still the news page,
+    // but the pending top-level navigation makes it a first-party main-frame document.
+    state.begin_navigation("https://widgets.example.net/embed");
+    let top = classify_web_request(1, "https://widgets.example.net/embed", &state, || {
+        String::from("https://news.example.com/")
+    });
+    assert_eq!(top.request_type, "document");
+    assert!(!blocker.check_network_request(
+        "https://widgets.example.net/embed",
+        &top.source_url,
+        top.request_type
+    ));
+}
+
+#[test]
+fn test_integration_redirect_data_url_decoding() {
+    let (mime, body) =
+        decode_data_url("data:text/javascript;base64,dm9pZCAwOw==").unwrap_or_default();
+    assert_eq!(mime, "text/javascript");
+    assert_eq!(body, b"void 0;");
+    assert!(decode_data_url("data:image/gif;base64,***").is_none());
+}
 
 #[test]
 fn test_integration_network_request_blocking() {
@@ -136,4 +178,33 @@ fn test_integration_cosmetic_filtering_rules() {
         .contains(&String::from("#sponsored-post")));
     // Exceptioned selector
     assert!(resources.exceptions.contains(".ad-banner"));
+}
+
+#[test]
+fn test_integration_iframe_cosmetic_round_trip() {
+    let blocker = Adblocker::from_rules(&[
+        "news.example.com##.top-only-ad",
+        "widgets.example.net##.widget-ad",
+    ]);
+    let top = "https://news.example.com/";
+
+    // The top page's preload never applies inside iframes.
+    let preload = build_document_start_preload_script(&blocker.cosmetic_resources_for_url(top));
+    assert!(preload.starts_with("if(window===window.top){"));
+    assert!(preload.contains(".top-only-ad"));
+
+    // The iframe asks for its own rules and gets the widget host's selectors only.
+    let msg = parse_frame_cosmetic_message("cosmetic_init:https://widgets.example.net/embed");
+    let script = msg
+        .as_ref()
+        .and_then(|event| frame_cosmetic_script(&blocker, 3, top, event))
+        .unwrap_or_default();
+    assert!(script.starts_with("if(window.__emberApplyCosmeticRules)"));
+    assert!(script.contains(".widget-ad"));
+    assert!(!script.contains(".top-only-ad"));
+    assert!(blocker
+        .tab_debug_snapshot(3)
+        .entries
+        .iter()
+        .any(|e| e.rule_or_name == ".widget-ad"));
 }

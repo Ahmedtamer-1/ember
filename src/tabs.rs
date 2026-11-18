@@ -42,6 +42,16 @@ pub struct Tab {
     pub pending_scroll_restore: bool,
     pub last_active_at: Instant,
     pub webview: Option<WebView>,
+    /// URL the user typed into the omnibox for the navigation currently in flight.
+    /// When the load finishes, the tab's *final* URL (after redirects) is marked as typed.
+    pub pending_typed_url: Option<String>,
+    /// `true` while the tab shows the inline "blocked by the ad blocker" notice, so the
+    /// synthetic `about:blank` load does not overwrite the blocked URL shown in the omnibox.
+    pub showing_blocked_notice: bool,
+    /// Last trusted user activation (pointer/key input) reported by this tab's page.
+    pub last_user_activation: Option<Instant>,
+    /// Last time this tab was allowed to open a popup / new tab.
+    pub last_popup_at: Option<Instant>,
 }
 
 /// Outcome of closing a tab.
@@ -51,6 +61,40 @@ pub enum CloseTabOutcome {
     Closed,
     /// The last remaining tab was closed, so the browser window should close.
     LastTabClosed,
+    /// No tab with the given ID exists; nothing changed.
+    NotFound,
+}
+
+/// How long after a user activation (click / key press) a page may open a new tab.
+pub const POPUP_ACTIVATION_WINDOW: Duration = Duration::from_secs(1);
+
+/// Popup-blocker decision: a page may open a new tab only if it saw a user activation within
+/// [`POPUP_ACTIVATION_WINDOW`] and that activation has not already been used by an earlier popup.
+pub fn popup_allowed(
+    last_activation: Option<Instant>,
+    last_popup: Option<Instant>,
+    now: Instant,
+) -> bool {
+    let Some(activation) = last_activation else {
+        return false;
+    };
+    if activation > now || now.duration_since(activation) > POPUP_ACTIVATION_WINDOW {
+        return false;
+    }
+    // One popup per activation.
+    !last_popup.is_some_and(|popup| popup >= activation)
+}
+
+/// Strips the `#fragment` part of a URL.
+pub fn strip_url_fragment(url: &str) -> &str {
+    url.split('#').next().unwrap_or(url)
+}
+
+/// Decides whether an SPA navigation (`pushState` / `replaceState` / `hashchange`) from
+/// `old_url` to `new_url` should create a history visit: only when the URL actually changed,
+/// ignoring the fragment.
+pub fn should_record_spa_visit(old_url: &str, new_url: &str) -> bool {
+    strip_url_fragment(old_url.trim()) != strip_url_fragment(new_url.trim())
 }
 
 /// Manages open tabs, lazy WebView instantiation, background suspension, and recently closed tabs.
@@ -129,6 +173,10 @@ impl TabManager {
             pending_scroll_restore: false,
             last_active_at: now,
             webview: None,
+            pending_typed_url: None,
+            showing_blocked_notice: false,
+            last_user_activation: None,
+            last_popup_at: None,
         };
 
         self.tabs.push(tab);
@@ -183,6 +231,10 @@ impl TabManager {
             pending_scroll_restore: scroll_position != (0.0, 0.0),
             last_active_at: Instant::now(),
             webview: None,
+            pending_typed_url: None,
+            showing_blocked_notice: false,
+            last_user_activation: None,
+            last_popup_at: None,
         };
 
         self.tabs.insert(source_index + 1, new_tab);
@@ -322,7 +374,7 @@ impl TabManager {
     /// Closes the specified tab, records it in the recently-closed stack, and activates an adjacent tab.
     pub fn close_tab(&mut self, tab_id: usize) -> CloseTabOutcome {
         let Some(index) = self.tabs.iter().position(|t| t.id == tab_id) else {
-            return CloseTabOutcome::Closed;
+            return CloseTabOutcome::NotFound;
         };
 
         let mut removed = self.tabs.remove(index);
@@ -392,6 +444,10 @@ impl TabManager {
             pending_scroll_restore: closed.scroll_position != (0.0, 0.0),
             last_active_at: Instant::now(),
             webview: None,
+            pending_typed_url: None,
+            showing_blocked_notice: false,
+            last_user_activation: None,
+            last_popup_at: None,
         };
 
         self.tabs.push(tab);
@@ -430,7 +486,9 @@ impl TabManager {
     }
 
     /// Reveals `tab_id`'s WebView and hides all other tabs' WebViews when `tab_id` is still active.
-    pub fn reveal_tab(&mut self, tab_id: usize) -> bool {
+    /// When `take_focus` is `false` (e.g. the user is typing in the omnibox) the page is shown
+    /// without stealing keyboard focus.
+    pub fn reveal_tab(&mut self, tab_id: usize, take_focus: bool) -> bool {
         if self.active_tab_id != tab_id {
             return false;
         }
@@ -445,7 +503,9 @@ impl TabManager {
         // Show the newly painted tab FIRST, then hide old/retiring WebViews so zero frames
         // ever expose the parent window background.
         let _ = target_wv.set_visible(true);
-        let _ = target_wv.focus();
+        if take_focus {
+            let _ = target_wv.focus();
+        }
         for tab in &self.tabs {
             if tab.id != tab_id {
                 if let Some(webview) = &tab.webview {
@@ -576,9 +636,11 @@ impl TabManager {
     /// Updates a tab's current URL and loading state.
     pub fn update_page_load(&mut self, tab_id: usize, url: String, is_loading: bool) -> bool {
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-            let is_synthetic_internal_load = tab.url.starts_with("ember://")
+            let is_synthetic_internal_load = (tab.url.starts_with("ember://")
+                || tab.showing_blocked_notice)
                 && (url == "about:blank" || url.starts_with("data:"));
             if !url.is_empty() && !is_synthetic_internal_load {
+                tab.showing_blocked_notice = false;
                 if tab.url != url {
                     if !tab.pending_scroll_restore {
                         tab.scroll_position = (0.0, 0.0);
@@ -594,6 +656,52 @@ impl TabManager {
             return true;
         }
         false
+    }
+
+    /// Remembers (or clears) the omnibox-typed URL for the navigation now starting in `tab_id`.
+    pub fn set_pending_typed_url(&mut self, tab_id: usize, typed: Option<String>) -> bool {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.pending_typed_url = typed;
+            return true;
+        }
+        false
+    }
+
+    /// Called when `tab_id` finishes loading: if the load was started from a typed omnibox URL,
+    /// consumes the pending marker (only once) and returns the tab's *final* URL to mark as typed.
+    pub fn take_typed_url_on_load_finished(&mut self, tab_id: usize) -> Option<String> {
+        let tab = self.tabs.iter_mut().find(|t| t.id == tab_id)?;
+        if tab.is_loading {
+            return None;
+        }
+        tab.pending_typed_url.take()?;
+        let url = tab.url.trim();
+        if url.is_empty() || url.starts_with("ember://") || tab.showing_blocked_notice {
+            return None;
+        }
+        Some(url.to_owned())
+    }
+
+    /// Records a user activation (pointer down / key press) reported by `tab_id`'s page.
+    pub fn note_user_activation(&mut self, tab_id: usize, now: Instant) -> bool {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.last_user_activation = Some(now);
+            return true;
+        }
+        false
+    }
+
+    /// Popup blocker: returns `true` (and consumes the activation) if `tab_id` may open a new tab now.
+    pub fn try_consume_popup(&mut self, tab_id: usize, now: Instant) -> bool {
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) else {
+            return false;
+        };
+        if popup_allowed(tab.last_user_activation, tab.last_popup_at, now) {
+            tab.last_popup_at = Some(now);
+            true
+        } else {
+            false
+        }
     }
 
     /// Returns the ID of the currently active tab.
@@ -906,5 +1014,123 @@ mod tests {
         // Closing the Settings tab works normally
         assert_eq!(manager.close_tab(settings_tab), CloseTabOutcome::Closed);
         assert_eq!(manager.summaries().len(), 4);
+    }
+
+    #[test]
+    fn test_close_unknown_tab_is_not_found() {
+        let mut manager = TabManager::new(Duration::from_secs(60));
+        let t1 = manager.create_tab("https://example.com", true);
+        assert_eq!(manager.close_tab(t1 + 100), CloseTabOutcome::NotFound);
+        assert_eq!(manager.summaries().len(), 1);
+        assert!(manager.recently_closed().is_empty());
+        assert_eq!(manager.active_tab_id(), t1);
+    }
+
+    #[test]
+    fn test_popup_allowed_requires_recent_unused_activation() {
+        let now = Instant::now();
+        let window = POPUP_ACTIVATION_WINDOW;
+        // No activation: blocked.
+        assert!(!popup_allowed(None, None, now));
+        // Fresh activation: allowed.
+        let act = now;
+        assert!(popup_allowed(
+            Some(act),
+            None,
+            act + Duration::from_millis(200)
+        ));
+        // Stale activation: blocked.
+        assert!(!popup_allowed(
+            Some(act),
+            None,
+            act + window + Duration::from_millis(1)
+        ));
+        // Activation already consumed by an earlier popup: blocked.
+        assert!(!popup_allowed(
+            Some(act),
+            Some(act + Duration::from_millis(10)),
+            act + Duration::from_millis(20)
+        ));
+        // A popup from before the newest activation does not block.
+        let act2 = act + Duration::from_millis(500);
+        assert!(popup_allowed(
+            Some(act2),
+            Some(act + Duration::from_millis(10)),
+            act2 + Duration::from_millis(5)
+        ));
+    }
+
+    #[test]
+    fn test_try_consume_popup_one_per_activation() {
+        let mut manager = TabManager::new(Duration::from_secs(60));
+        let t1 = manager.create_tab("https://example.com", true);
+        let now = Instant::now();
+        assert!(!manager.try_consume_popup(t1, now));
+        assert!(manager.note_user_activation(t1, now));
+        assert!(manager.try_consume_popup(t1, now + Duration::from_millis(50)));
+        assert!(!manager.try_consume_popup(t1, now + Duration::from_millis(60)));
+        assert!(!manager.try_consume_popup(t1 + 1, now));
+    }
+
+    #[test]
+    fn test_typed_url_marked_once_with_final_url() {
+        let mut manager = TabManager::new(Duration::from_secs(60));
+        let t1 = manager.create_tab("ember://newtab", true);
+        assert!(manager.set_pending_typed_url(t1, Some(String::from("https://x.com"))));
+
+        // Still loading: nothing to mark yet.
+        manager.update_page_load(t1, String::from("https://x.com"), true);
+        assert_eq!(manager.take_typed_url_on_load_finished(t1), None);
+
+        // Load finished after a redirect: the final URL is marked, exactly once.
+        manager.update_page_load(t1, String::from("https://x.com/home"), false);
+        assert_eq!(
+            manager.take_typed_url_on_load_finished(t1),
+            Some(String::from("https://x.com/home"))
+        );
+        assert_eq!(manager.take_typed_url_on_load_finished(t1), None);
+
+        // Loads without a typed URL never mark anything.
+        manager.update_page_load(t1, String::from("https://x.com/other"), false);
+        assert_eq!(manager.take_typed_url_on_load_finished(t1), None);
+    }
+
+    #[test]
+    fn test_spa_visit_dedup_decision() {
+        assert!(!should_record_spa_visit(
+            "https://app.example.com/a",
+            "https://app.example.com/a"
+        ));
+        assert!(!should_record_spa_visit(
+            "https://app.example.com/a",
+            "https://app.example.com/a#section"
+        ));
+        assert!(should_record_spa_visit(
+            "https://app.example.com/a",
+            "https://app.example.com/b"
+        ));
+        assert!(should_record_spa_visit(
+            "https://app.example.com/a?p=1",
+            "https://app.example.com/a?p=2"
+        ));
+    }
+
+    #[test]
+    fn test_blocked_notice_keeps_url_on_synthetic_load() {
+        let mut manager = TabManager::new(Duration::from_secs(60));
+        let t1 = manager.create_tab("https://ads.example.com/x", true);
+        if let Some(tab) = manager.get_tab_mut(t1) {
+            tab.showing_blocked_notice = true;
+        }
+        manager.update_page_load(t1, String::from("about:blank"), false);
+        assert_eq!(
+            manager.get_tab(t1).map(|t| t.url.as_str()),
+            Some("https://ads.example.com/x")
+        );
+        // A real navigation clears the notice flag.
+        manager.update_page_load(t1, String::from("https://example.org/"), false);
+        assert!(manager
+            .get_tab(t1)
+            .is_some_and(|t| !t.showing_blocked_notice && t.url == "https://example.org/"));
     }
 }

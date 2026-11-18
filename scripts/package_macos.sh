@@ -5,7 +5,12 @@ set -euo pipefail
 VERSION="${1:-0.1.0}"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${PROJECT_ROOT}/target/dist"
-PKG_NAME="ember-v${VERSION}-macos-x64"
+case "$(uname -m)" in
+    arm64|aarch64) ARCH="arm64" ;;
+    x86_64) ARCH="x64" ;;
+    *) ARCH="$(uname -m)" ;;
+esac
+PKG_NAME="ember-v${VERSION}-macos-${ARCH}"
 PKG_DIR="${DIST_DIR}/${PKG_NAME}"
 APP_BUNDLE="${PKG_DIR}/Ember.app"
 

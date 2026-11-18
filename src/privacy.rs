@@ -26,28 +26,69 @@ pub const DNT_GPC_SCRIPT: &str = r#"
 const COMPOUND_SUFFIX_LABELS: &[&str] =
     &["co", "com", "org", "net", "gov", "edu", "ac", "or", "ne"];
 
+/// Common multi-tenant hosting suffixes from the private section of the public suffix list:
+/// `alice.github.io` and `bob.github.io` are different sites.
+const PRIVATE_SUFFIXES: &[&str] = &[
+    "github.io",
+    "githubusercontent.com",
+    "gitlab.io",
+    "blogspot.com",
+    "wordpress.com",
+    "herokuapp.com",
+    "appspot.com",
+    "netlify.app",
+    "vercel.app",
+    "pages.dev",
+    "workers.dev",
+    "web.app",
+    "firebaseapp.com",
+    "azurewebsites.net",
+    "cloudfront.net",
+    "s3.amazonaws.com",
+    "fly.dev",
+    "onrender.com",
+];
+
 /// Approximates the registrable domain (eTLD+1) of `host`.
+///
+/// IP literals (v4 and bracketed v6) are returned unchanged. Uses a small built-in suffix
+/// heuristic instead of the full public suffix list: `<label>.<compound>.<ccTLD>`
+/// (`bbc.co.uk`) and a handful of private multi-tenant suffixes (`user.github.io`).
 pub fn registrable_domain(host: &str) -> String {
     let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
     if host.is_empty()
         || host.starts_with('[')
+        || host.contains(':')
         || host.chars().all(|c| c.is_ascii_digit() || c == '.')
     {
         return host;
     }
-    let labels: Vec<&str> = host.split('.').collect();
+    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
     let n = labels.len();
     if n <= 2 {
-        return host;
+        return labels.join(".");
     }
-    let tld = labels[n - 1];
-    let second = labels[n - 2];
-    let take = if tld.len() == 2 && COMPOUND_SUFFIX_LABELS.contains(&second) {
-        3
+
+    let suffix_labels = PRIVATE_SUFFIXES
+        .iter()
+        .filter(|suffix| {
+            host.strip_suffix(*suffix)
+                .is_some_and(|rest| rest.ends_with('.'))
+        })
+        .map(|suffix| suffix.split('.').count())
+        .max();
+    let take = if let Some(count) = suffix_labels {
+        count + 1
     } else {
-        2
+        let tld = labels[n - 1];
+        let second = labels[n - 2];
+        if tld.len() == 2 && COMPOUND_SUFFIX_LABELS.contains(&second) {
+            3
+        } else {
+            2
+        }
     };
-    labels[n - take..].join(".")
+    labels[n.saturating_sub(take)..].join(".")
 }
 
 /// Returns `true` if `request_url` belongs to a different registrable domain than `source_url`.
@@ -139,6 +180,65 @@ mod tests {
         assert_eq!(registrable_domain("cdn.static.example.com"), "example.com");
         assert_eq!(registrable_domain("news.bbc.co.uk"), "bbc.co.uk");
         assert_eq!(registrable_domain("127.0.0.1"), "127.0.0.1");
+    }
+
+    #[test]
+    fn test_registrable_domain_edge_cases() {
+        assert_eq!(registrable_domain("WWW.Example.COM."), "example.com");
+        assert_eq!(registrable_domain("localhost"), "localhost");
+        assert_eq!(registrable_domain("[::1]"), "[::1]");
+        assert_eq!(registrable_domain("a.b.example.com.au"), "example.com.au");
+        assert_eq!(registrable_domain("shop.example.co.jp"), "example.co.jp");
+        // 2-letter TLD without a compound second-level label.
+        assert_eq!(registrable_domain("cdn.example.io"), "example.io");
+        // Private multi-tenant suffixes.
+        assert_eq!(registrable_domain("alice.github.io"), "alice.github.io");
+        assert_eq!(
+            registrable_domain("assets.alice.github.io"),
+            "alice.github.io"
+        );
+        assert_eq!(
+            registrable_domain("bucket.s3.amazonaws.com"),
+            "bucket.s3.amazonaws.com"
+        );
+        // A suffix match must be on a label boundary.
+        assert_eq!(registrable_domain("www.notgithub.io"), "notgithub.io");
+        assert_eq!(registrable_domain("github.io"), "github.io");
+        assert_eq!(registrable_domain(""), "");
+    }
+
+    #[test]
+    fn test_is_third_party_more_cases() {
+        // Same site across subdomains / ports / schemes.
+        assert!(!is_third_party(
+            "http://api.example.com:8080/x",
+            "https://example.com/"
+        ));
+        assert!(!is_third_party(
+            "https://img.bbc.co.uk/a.png",
+            "https://news.bbc.co.uk/"
+        ));
+        // Different sites under a compound suffix.
+        assert!(is_third_party(
+            "https://tracker.co.uk/p",
+            "https://news.bbc.co.uk/"
+        ));
+        // Multi-tenant hosting: different tenants are third parties of each other.
+        assert!(is_third_party(
+            "https://bob.github.io/x.js",
+            "https://alice.github.io/"
+        ));
+        assert!(!is_third_party(
+            "https://alice.github.io/x.js",
+            "https://alice.github.io/page"
+        ));
+        // IP literals.
+        assert!(is_third_party("http://10.0.0.2/a", "http://10.0.0.1/"));
+        assert!(!is_third_party("http://[::1]:3000/a", "http://[::1]:8080/"));
+        // Unknown / non-HTTP sources are first-party.
+        assert!(!is_third_party("https://a.com/", ""));
+        assert!(!is_third_party("https://a.com/", "data:text/html,hi"));
+        assert!(!is_third_party("data:text/plain,x", "https://a.com/"));
     }
 
     #[test]

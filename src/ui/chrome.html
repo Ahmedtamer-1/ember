@@ -3606,6 +3606,10 @@
 
         if (currentState.findOpen) {
           findBar.classList.add("open");
+        } else if (prevActiveId && prevActiveId !== currentState.activeTabId) {
+          // Find state is per tab: the host resets it on tab switches, so close the bar
+          // instead of showing the previous tab's query/counts.
+          findBar.classList.remove("open");
         }
         findCount.textContent = (currentState.findActive || 0) + "/" + (currentState.findTotal || 0);
 
@@ -3949,6 +3953,16 @@
           }
         }
 
+        // A popup is only user-visible once it is revealed (`.open.visible`, i.e. opacity 1)
+        // and laid out inside the expanded Chrome UI viewport.
+        function isPopupShown(el) {
+          if (!el || !el.classList.contains("open") || !el.classList.contains("visible")) {
+            return false;
+          }
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= window.innerHeight;
+        }
+
         function getActiveTabUrl() {
           if (!currentState || !Array.isArray(currentState.tabs)) return "";
           const active = currentState.tabs.find(function (t) {
@@ -4011,6 +4025,9 @@
           });
 
           // 3. Omnibox returns suggestions for a known history entry
+          // Let the previous navigation's first-paint / 300ms reveal fallback finish first, so
+          // the page reveal can't race the omnibox focus below.
+          await sleep(400);
           omnibox.focus();
           ensureOmniboxFocusSynced();
           await sleep(30);
@@ -4043,7 +4060,7 @@
           // 4. Popup opens and closes (omnibox overlay + three-dot menu overlay)
           popupOpened = await waitUntil(function () {
             return activePopupKind === "omnibox"
-              && omniboxDropdown.classList.contains("open")
+              && isPopupShown(omniboxDropdown)
               && overlayExpanded
               && window.innerHeight > 120;
           }, 1200);
@@ -4051,11 +4068,12 @@
             menuBtn.click();
             popupOpened = await waitUntil(function () {
               return activePopupKind === "menu"
-                && menuDropdown.classList.contains("open")
+                && isPopupShown(menuDropdown)
                 && overlayExpanded
                 && window.innerHeight > 120;
             }, 1500);
           }
+          const openInnerHeight = window.innerHeight;
           await sleep(80);
           closeSuggestions("selftest");
           omnibox.blur();
@@ -4072,7 +4090,7 @@
             menuBtn.click();
             const menuOpened = await waitUntil(function () {
               return activePopupKind === "menu"
-                && menuDropdown.classList.contains("open")
+                && isPopupShown(menuDropdown)
                 && overlayScrim.classList.contains("open")
                 && overlayExpanded
                 && window.innerHeight > 120;
@@ -4090,7 +4108,12 @@
           results.push({
             name: "popup opens and closes",
             pass: popupOpened && popupClosed && menuToggleOk,
-            detail: "opened=" + popupOpened + " closed=" + popupClosed + " menuToggleOk=" + menuToggleOk + " innerHeight=" + window.innerHeight
+            detail:
+              "opened=" + popupOpened +
+              " closed=" + popupClosed +
+              " menuToggleOk=" + menuToggleOk +
+              " openInnerHeight=" + openInnerHeight +
+              " innerHeight=" + window.innerHeight
           });
 
           // 5. A tab opens with an animation
@@ -4323,7 +4346,7 @@
               return (
                 overlayExpanded &&
                 activePopupKind === "omnibox" &&
-                omniboxDropdown.classList.contains("open") &&
+                isPopupShown(omniboxDropdown) &&
                 overlayScrim.classList.contains("open") &&
                 window.innerHeight > 120
               );
@@ -4340,6 +4363,40 @@
                 isToolbarHeightRestored()
               );
             }, 1500);
+          }
+
+          // Host round-trip + focus tracking. Close paths that make the host switch tabs or
+          // navigate also move OS focus to the page WebView and back, and push a new tab state;
+          // all of that lands asynchronously. Without waiting for it, those late blur /
+          // state-sync events close the NEXT cycle's freshly opened popup (a real, correct
+          // close, but attributed to the wrong cycle).
+          let hostCollapseAcks = 0;
+          let lastFocusChangeAt = performance.now();
+          const prevOnOverlayCollapsed = window.__emberOnOverlayCollapsed;
+          window.__emberOnOverlayCollapsed = function () {
+            hostCollapseAcks += 1;
+            if (typeof prevOnOverlayCollapsed === "function") {
+              prevOnOverlayCollapsed();
+            }
+          };
+          function noteFocusChange() {
+            lastFocusChangeAt = performance.now();
+          }
+          window.addEventListener("focus", noteFocusChange, true);
+          window.addEventListener("blur", noteFocusChange, true);
+
+          async function settleHostSideEffects(acksBeforeTrigger) {
+            // The trigger's own close sent one overlay_shrink; this probe sends a second. The
+            // host handles IPC in order, so once both acks are back every host-side effect of
+            // the trigger (tab switch, navigation, focus moves, state sync) has been issued.
+            sendIpc("overlay_shrink:selftest_settle");
+            const acked = await waitUntil(function () {
+              return hostCollapseAcks >= acksBeforeTrigger + 2;
+            }, 1500);
+            const quiet = await waitUntil(function () {
+              return performance.now() - lastFocusChangeAt >= 40;
+            }, 1000);
+            return acked && quiet;
           }
 
           const CYCLES_PER_PATH = 50;
@@ -4387,7 +4444,15 @@
             {
               name: "omnibox_blur",
               trigger: function () {
+                const pageHadFocus = document.hasFocus();
                 omnibox.blur();
+                // Chromium/WebView2 does not dispatch focus/blur events while the page itself
+                // lacks OS focus (e.g. the window is not foreground), so blur() would only move
+                // activeElement and the popup would linger until the 300ms omnibox watchdog.
+                // Deliver the blur event a real focus loss produces so the same handler runs.
+                if (!pageHadFocus && activePopupKind !== null) {
+                  omnibox.dispatchEvent(new FocusEvent("blur"));
+                }
               }
             },
             {
@@ -4414,6 +4479,7 @@
             },
             {
               name: "tab_switch",
+              hostSideEffects: true,
               trigger: function () {
                 window.dispatchEvent(
                   new KeyboardEvent("keydown", {
@@ -4427,6 +4493,7 @@
             },
             {
               name: "navigation_start",
+              hostSideEffects: true,
               trigger: function () {
                 window.dispatchEvent(
                   new KeyboardEvent("keydown", {
@@ -4440,6 +4507,7 @@
             },
             {
               name: "suggestion_click",
+              hostSideEffects: true,
               trigger: function () {
                 const row = omniboxDropdown.querySelector(".omnibox-item");
                 if (row) {
@@ -4460,9 +4528,11 @@
             for (let iter = 0; iter < CYCLES_PER_PATH; iter += 1) {
               const expanded = await openStressOverlayCycle();
               if (!expanded) break;
+              const acksBeforeTrigger = hostCollapseAcks;
               path.trigger();
               const shrunk = await verifyShrinkRestored();
               if (!shrunk) break;
+              if (path.hostSideEffects && !(await settleHostSideEffects(acksBeforeTrigger))) break;
               okCount += 1;
             }
             pathSummaries.push(path.name + "=" + okCount + "/" + CYCLES_PER_PATH);
@@ -4470,6 +4540,9 @@
               allPathsPassed = false;
             }
           }
+          window.removeEventListener("focus", noteFocusChange, true);
+          window.removeEventListener("blur", noteFocusChange, true);
+          window.__emberOnOverlayCollapsed = prevOnOverlayCollapsed;
 
           // Idempotent double-close check while collapsed
           closeSuggestions("idempotent_first");

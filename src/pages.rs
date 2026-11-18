@@ -79,22 +79,23 @@ pub fn warning_target(url: &str) -> Option<String> {
 /// Renders an internal `ember://` page into `(page_title, html_document)`.
 pub fn render_internal_page(url: &str, ctx: &PageCtx<'_>) -> Option<(String, String)> {
     let canonical = canonical_internal_url(url)?;
+    let tok = crate::ui::internal_ipc_token();
     match canonical {
         NEWTAB_URL => Some((
             String::from("New Tab"),
-            render_newtab_html(&ctx.storage.most_visited(8)),
+            render_newtab_html(&ctx.storage.most_visited(8), tok),
         )),
         HISTORY_URL => Some((
             String::from("History"),
-            render_history_html(&ctx.storage.recent_history(200)),
+            render_history_html(&ctx.storage.recent_history(200), tok),
         )),
         BOOKMARKS_URL => Some((
             String::from("Bookmarks"),
-            render_bookmarks_html(&ctx.storage.list_bookmarks()),
+            render_bookmarks_html(&ctx.storage.list_bookmarks(), tok),
         )),
         DOWNLOADS_URL => Some((
             String::from("Downloads"),
-            render_downloads_html(ctx.storage.downloads_dir()),
+            render_downloads_html(ctx.storage.downloads_dir(), tok),
         )),
         SETTINGS_URL => Some((
             String::from("Settings"),
@@ -102,20 +103,35 @@ pub fn render_internal_page(url: &str, ctx: &PageCtx<'_>) -> Option<(String, Str
                 &ctx.settings.get(),
                 ctx.settings.config_path(),
                 ctx.adblocker,
+                tok,
             ),
         )),
         WARNING_URL => Some((
             String::from("Connection not secure"),
-            render_https_warning_html(&warning_target(url).unwrap_or_default()),
+            render_https_warning_html(&warning_target(url).unwrap_or_default(), tok),
         )),
         ADBLOCK_DEBUG_URL => Some((
             String::from("Adblock Debug"),
-            render_adblock_debug_html(ctx.adblocker),
+            render_adblock_debug_html(ctx.adblocker, tok),
         )),
         #[cfg(debug_assertions)]
-        SELFTEST_URL => Some((String::from("Self-Test"), render_selftest_html())),
+        SELFTEST_URL => Some((String::from("Self-Test"), render_selftest_html(tok))),
         _ => None,
     }
+}
+
+// Prefix that privileged IPC messages from internal `ember://` pages carry, followed by the
+// per-process token and a `:` (`ember_tok:<token>:<message>`).
+use crate::ui::INTERNAL_IPC_PREFIX;
+
+/// Returns the JavaScript every internal page embeds (at the start of its `<script>`) to send
+/// IPC messages. `emberSend(msg)` posts `ember_tok:<token>:<msg>`; internal pages must never
+/// call `window.ipc.postMessage` directly.
+fn ipc_send_js(token: &str) -> String {
+    format!(
+        "var __EMBER_TOK = '{tok}';\nfunction emberSend(m) {{ if (window.ipc && typeof window.ipc.postMessage === 'function') {{ window.ipc.postMessage('{INTERNAL_IPC_PREFIX}' + __EMBER_TOK + ':' + m); }} }}\n",
+        tok = escape_js_script_string(token),
+    )
 }
 
 fn percent_encode(input: &str) -> String {
@@ -177,18 +193,18 @@ const SHARED_INTERNAL_CSS: &str = r#"
     --shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
   }
 }
-:root {{
+:root {
   --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-}}
-* {{ box-sizing: border-box; margin: 0; padding: 0; }}
-html, body {{
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
   font-family: var(--font-ui);
   text-size-adjust: 100%;
   -webkit-text-size-adjust: 100%;
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
-}}
+}
 a { color: inherit; text-decoration: none; }
 .nav-links {
   display: flex;
@@ -212,7 +228,8 @@ a { color: inherit; text-decoration: none; }
 .pill-btn.danger { color: var(--danger); border-color: var(--danger); }
 "#;
 
-fn render_newtab_html(most_visited: &[HistoryEntry]) -> String {
+fn render_newtab_html(most_visited: &[HistoryEntry], tok: &str) -> String {
+    let ipc_js = ipc_send_js(tok);
     let default_sites: &[(&str, &str)] = &[
         ("Rust Programming Language", "https://www.rust-lang.org"),
         ("Crates.io Registry", "https://crates.io"),
@@ -388,10 +405,9 @@ fn render_newtab_html(most_visited: &[HistoryEntry]) -> String {
   </div>
 </div>
 <script>
+{ipc_js}
 function go(target) {{
-  if (window.ipc && typeof window.ipc.postMessage === 'function') {{
-    window.ipc.postMessage('navigate:' + target);
-  }}
+  emberSend('navigate:' + target);
 }}
 document.getElementById('search-form').addEventListener('submit', function(e) {{
   e.preventDefault();
@@ -413,9 +429,9 @@ fn render_tile(title: &str, url: &str, visits: Option<i64>) -> String {
         Some(v) if v > 1 => format!("{} &middot; {} visits", escape_html(&host), v),
         _ => escape_html(&host),
     };
-    let escaped_url = escape_js_attr(url);
+    let url_attr = escape_html(url);
     format!(
-        r#"<div class="tile-card" onclick="go('{escaped_url}')">
+        r#"<div class="tile-card" data-url="{url_attr}" onclick="go(this.dataset.url)">
   <div class="tile-icon">{initial}</div>
   <div class="tile-title">{title}</div>
   <div class="tile-meta">{meta}</div>
@@ -424,7 +440,8 @@ fn render_tile(title: &str, url: &str, visits: Option<i64>) -> String {
     )
 }
 
-fn render_history_html(entries: &[HistoryEntry]) -> String {
+fn render_history_html(entries: &[HistoryEntry], tok: &str) -> String {
+    let ipc_js = ipc_send_js(tok);
     let mut rows = String::new();
     if entries.is_empty() {
         rows.push_str(
@@ -432,12 +449,11 @@ fn render_history_html(entries: &[HistoryEntry]) -> String {
         );
     } else {
         for item in entries {
-            let escaped_url = escape_js_attr(&item.url);
             let host = extract_display_host(&item.url);
             let initial = host.chars().next().unwrap_or('W').to_ascii_uppercase();
             rows.push_str(&format!(
                 r#"<div class="list-item" data-search="{search}">
-  <div class="item-main" onclick="go('{escaped_url}')">
+  <div class="item-main" data-url="{url}" onclick="go(this.dataset.url)">
     <div class="item-badge">{initial}</div>
     <div class="item-text">
       <div class="item-title">{title}</div>
@@ -446,7 +462,7 @@ fn render_history_html(entries: &[HistoryEntry]) -> String {
   </div>
   <div class="item-actions">
     <span class="visit-pill">{visits} visit{plural}</span>
-    <button class="icon-del" title="Remove from history" onclick="delHistory('{escaped_url}')">&times;</button>
+    <button class="icon-del" title="Remove from history" data-url="{url}" onclick="delHistory(this.dataset.url)">&times;</button>
   </div>
 </div>"#,
                 search = escape_html(&format!(
@@ -586,20 +602,15 @@ fn render_history_html(entries: &[HistoryEntry]) -> String {
   </div>
 </div>
 <script>
+{ipc_js}
 function go(target) {{
-  if (window.ipc && typeof window.ipc.postMessage === 'function') {{
-    window.ipc.postMessage('navigate:' + target);
-  }}
+  emberSend('navigate:' + target);
 }}
 function clearHistory() {{
-  if (window.ipc && typeof window.ipc.postMessage === 'function') {{
-    window.ipc.postMessage('history_clear:');
-  }}
+  emberSend('history_clear:');
 }}
 function delHistory(url) {{
-  if (window.ipc && typeof window.ipc.postMessage === 'function') {{
-    window.ipc.postMessage('history_delete:' + url);
-  }}
+  emberSend('history_delete:' + url);
 }}
 function filterList(q) {{
   var needle = (q || '').toLowerCase().trim();
@@ -615,7 +626,8 @@ function filterList(q) {{
     )
 }
 
-fn render_bookmarks_html(entries: &[BookmarkEntry]) -> String {
+fn render_bookmarks_html(entries: &[BookmarkEntry], tok: &str) -> String {
+    let ipc_js = ipc_send_js(tok);
     let mut rows = String::new();
     if entries.is_empty() {
         rows.push_str(
@@ -623,12 +635,11 @@ fn render_bookmarks_html(entries: &[BookmarkEntry]) -> String {
         );
     } else {
         for item in entries {
-            let escaped_url = escape_js_attr(&item.url);
             let host = extract_display_host(&item.url);
             let initial = host.chars().next().unwrap_or('B').to_ascii_uppercase();
             rows.push_str(&format!(
                 r#"<div class="list-item" data-search="{search}">
-  <div class="item-main" onclick="go('{escaped_url}')">
+  <div class="item-main" data-url="{url}" onclick="go(this.dataset.url)">
     <div class="item-badge">{initial}</div>
     <div class="item-text">
       <div class="item-title">{title}</div>
@@ -636,7 +647,7 @@ fn render_bookmarks_html(entries: &[BookmarkEntry]) -> String {
     </div>
   </div>
   <div class="item-actions">
-    <button class="icon-del" title="Remove bookmark" onclick="removeBookmark('{escaped_url}')">Remove</button>
+    <button class="icon-del" title="Remove bookmark" data-url="{url}" onclick="removeBookmark(this.dataset.url)">Remove</button>
   </div>
 </div>"#,
                 search = escape_html(&format!(
@@ -767,15 +778,12 @@ fn render_bookmarks_html(entries: &[BookmarkEntry]) -> String {
   </div>
 </div>
 <script>
+{ipc_js}
 function go(target) {{
-  if (window.ipc && typeof window.ipc.postMessage === 'function') {{
-    window.ipc.postMessage('navigate:' + target);
-  }}
+  emberSend('navigate:' + target);
 }}
 function removeBookmark(url) {{
-  if (window.ipc && typeof window.ipc.postMessage === 'function') {{
-    window.ipc.postMessage('bookmark_remove:' + url);
-  }}
+  emberSend('bookmark_remove:' + url);
 }}
 function filterList(q) {{
   var needle = (q || '').toLowerCase().trim();
@@ -791,7 +799,8 @@ function filterList(q) {{
     )
 }
 
-fn render_downloads_html(downloads_dir: &std::path::Path) -> String {
+fn render_downloads_html(downloads_dir: &std::path::Path, tok: &str) -> String {
+    let ipc_js = ipc_send_js(tok);
     let dir_escaped = escape_html(&downloads_dir.to_string_lossy());
     format!(
         r#"<!DOCTYPE html>
@@ -823,10 +832,9 @@ fn render_downloads_html(downloads_dir: &std::path::Path) -> String {
   </div>
 </div>
 <script>
+{ipc_js}
 function go(target) {{
-  if (window.ipc && typeof window.ipc.postMessage === 'function') {{
-    window.ipc.postMessage('navigate:' + target);
-  }}
+  emberSend('navigate:' + target);
 }}
 </script>
 </body>
@@ -852,23 +860,6 @@ fn escape_html(input: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
-fn escape_js_attr(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '\'' => out.push_str("\\'"),
-            '"' => out.push_str("&quot;"),
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '\r' | '\n' => {}
             _ => out.push(ch),
         }
     }
@@ -912,7 +903,7 @@ const SETTINGS_CSS: &str = r#"
 "#;
 
 const SETTINGS_JS: &str = r#"
-function send(m) { if (window.ipc && typeof window.ipc.postMessage === 'function') { window.ipc.postMessage(m); } }
+function send(m) { emberSend(m); }
 function flash() {
   var el = document.getElementById('saved');
   el.classList.add('show');
@@ -994,7 +985,9 @@ fn render_settings_html(
     settings: &BrowserSettings,
     config_path: &std::path::Path,
     adblocker: &Adblocker,
+    tok: &str,
 ) -> String {
+    let ipc_js = ipc_send_js(tok);
     let own = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
         pairs
             .iter()
@@ -1107,9 +1100,8 @@ fn render_settings_html(
     } else {
         for host in &hosts {
             allow.push_str(&format!(
-                r#"<div class="allow-item"><span>{h}</span><button class="btn" onclick="act('allowlist_remove', '{j}')">Remove</button></div>"#,
+                r#"<div class="allow-item"><span>{h}</span><button class="btn" data-host="{h}" onclick="act('allowlist_remove', this.dataset.host)">Remove</button></div>"#,
                 h = escape_html(host),
-                j = escape_js_attr(host),
             ));
         }
     }
@@ -1171,7 +1163,7 @@ fn render_settings_html(
   <div class="status" style="text-align:center;padding:12px 0 24px;">Configuration stored in <code>{config_path}</code></div>
 </div>
 <div id="saved">Saved</div>
-<script>{SETTINGS_JS}</script>
+<script>{ipc_js}{SETTINGS_JS}</script>
 </body>
 </html>"#,
         config_path = escape_html(&config_path.display().to_string()),
@@ -1179,7 +1171,8 @@ fn render_settings_html(
 }
 
 #[cfg(debug_assertions)]
-fn render_selftest_html() -> String {
+fn render_selftest_html(tok: &str) -> String {
+    let ipc_js = ipc_send_js(tok);
     let default_checks = [
         "UI scripts initialized without errors",
         "omnibox navigates to a URL",
@@ -1219,8 +1212,8 @@ fn render_selftest_html() -> String {
   <div class="page-header">
     <h1>Ember UI Self-Test</h1>
     <div class="nav-links">
-      <button class="pill-btn" onclick="window.ipc && window.ipc.postMessage('settings_action:open:ember://newtab')">New Tab</button>
-      <button class="pill-btn" onclick="window.ipc && window.ipc.postMessage('settings_action:open:ember://adblock-debug')">Adblock Debug</button>
+      <button class="pill-btn" onclick="emberSend('settings_action:open:ember://newtab')">New Tab</button>
+      <button class="pill-btn" onclick="emberSend('settings_action:open:ember://adblock-debug')">Adblock Debug</button>
     </div>
   </div>
   <div class="section">
@@ -1243,14 +1236,13 @@ fn render_selftest_html() -> String {
   </div>
 </div>
 <script>
+{ipc_js}
 function runSelfTest() {{
   var btn = document.getElementById('run-selftest-btn');
   var summary = document.getElementById('st-summary');
   if (btn) btn.disabled = true;
   if (summary) summary.textContent = 'Running 7 checks...';
-  if (window.ipc && typeof window.ipc.postMessage === 'function') {{
-    window.ipc.postMessage('settings_action:run_selftest:');
-  }}
+  emberSend('settings_action:run_selftest:');
 }}
 window.__emberRenderSelfTestReport = function (report) {{
   var btn = document.getElementById('run-selftest-btn');
@@ -1292,7 +1284,8 @@ window.__emberRenderSelfTestReport = function (report) {{
     )
 }
 
-fn render_adblock_debug_html(adblocker: &Adblocker) -> String {
+fn render_adblock_debug_html(adblocker: &Adblocker, tok: &str) -> String {
+    let ipc_js = ipc_send_js(tok);
     let (tab_id, snapshot) = adblocker.latest_tab_debug_snapshot();
     let updating = adblocker.is_updating();
     let page_url = if snapshot.page_url.is_empty() {
@@ -1329,7 +1322,7 @@ fn render_adblock_debug_html(adblocker: &Adblocker) -> String {
 .dbg-meta {{ color: var(--muted); font-size: 13px; margin-bottom: 18px; line-height: 1.6; }}
 .dbg-table {{ width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; font-size: 12.5px; }}
 .dbg-table th, .dbg-table td {{ text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }}
-.dbg-table th {{ background: var(--surface-2); font-weight: 600; color: var(--muted); }}
+.dbg-table th {{ background: var(--surface-hover);font-weight: 600; color: var(--muted); }}
 .mono {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; word-break: break-all; }}
 .url-col {{ max-width: 380px; color: var(--muted); }}
 .badge {{ display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }}
@@ -1361,11 +1354,10 @@ fn render_adblock_debug_html(adblocker: &Adblocker) -> String {
   </table>
 </div>
 <script>
+{ipc_js}
 function updateNow() {{
-  if (window.ipc && typeof window.ipc.postMessage === 'function') {{
-    window.ipc.postMessage('settings_action:update_filters');
-    setTimeout(function() {{ location.reload(); }}, 1500);
-  }}
+  emberSend('settings_action:update_filters');
+  setTimeout(function() {{ location.reload(); }}, 1500);
 }}
 </script>
 </body>
@@ -1381,7 +1373,8 @@ function updateNow() {{
     )
 }
 
-fn render_https_warning_html(target: &str) -> String {
+fn render_https_warning_html(target: &str, tok: &str) -> String {
+    let ipc_js = ipc_send_js(tok);
     let host = extract_display_host(target);
     let https_alt = target
         .strip_prefix("http://")
@@ -1391,8 +1384,8 @@ fn render_https_warning_html(target: &str) -> String {
         String::new()
     } else {
         format!(
-            r#"<button class="btn" onclick="go('{}')">Try the HTTPS version</button>"#,
-            escape_js_attr(&https_alt)
+            r#"<button class="btn" data-url="{}" onclick="go(this.dataset.url)">Try the HTTPS version</button>"#,
+            escape_html(&https_alt)
         )
     };
 
@@ -1426,10 +1419,10 @@ fn render_https_warning_html(target: &str) -> String {
   </div>
 </div>
 <script>
+{ipc_js}
 var TARGET = '{target_js}';
-function send(m) {{ if (window.ipc && typeof window.ipc.postMessage === 'function') {{ window.ipc.postMessage(m); }} }}
-function go(t) {{ send('navigate:' + t); }}
-function proceed() {{ send('https_proceed:' + TARGET); }}
+function go(t) {{ emberSend('navigate:' + t); }}
+function proceed() {{ emberSend('https_proceed:' + TARGET); }}
 </script>
 </body>
 </html>"#,
@@ -1449,7 +1442,11 @@ fn escape_js_script_string(input: &str) -> String {
             '<' => out.push_str("\\x3C"),
             '>' => out.push_str("\\x3E"),
             '&' => out.push_str("\\x26"),
-            '\r' | '\n' => {}
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            '\0' => out.push_str("\\x00"),
             _ => out.push(ch),
         }
     }
@@ -1459,6 +1456,8 @@ fn escape_js_script_string(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_TOK: &str = "0123abcdef";
 
     #[test]
     fn test_internal_url_routing() {
@@ -1488,7 +1487,7 @@ mod tests {
             canonical_internal_url("ember://selftest"),
             Some(SELFTEST_URL)
         );
-        let html = render_selftest_html();
+        let html = render_selftest_html(TEST_TOK);
         assert!(html.contains("Ember UI Self-Test"));
         assert!(html.contains("__emberRenderSelfTestReport"));
         assert!(html.contains("DOM tab count equals Rust tab count"));
@@ -1516,6 +1515,7 @@ mod tests {
             &settings,
             std::path::Path::new("/tmp/settings.toml"),
             &Adblocker::new(),
+            TEST_TOK,
         );
         assert!(!html.contains("<script>alert(1)"));
         assert!(html.contains("&quot;&gt;&lt;script&gt;"));
@@ -1524,8 +1524,198 @@ mod tests {
 
     #[test]
     fn test_warning_page_escapes_target() {
-        let html = render_https_warning_html("http://evil.test/'</script><script>alert(1)//");
+        let html =
+            render_https_warning_html("http://evil.test/'</script><script>alert(1)//", TEST_TOK);
         assert!(!html.contains("</script><script>alert(1)"));
         assert!(html.contains("evil.test"));
+    }
+
+    fn sample_history() -> Vec<HistoryEntry> {
+        vec![HistoryEntry {
+            id: 1,
+            url: String::from("https://a.test/it's\"<b>&\\x"),
+            title: String::from("<img src=x onerror=alert(1)> 'quoted'"),
+            visit_count: 3,
+            last_visited_at: 0,
+        }]
+    }
+
+    fn sample_bookmarks() -> Vec<BookmarkEntry> {
+        vec![BookmarkEntry {
+            id: 1,
+            url: String::from("https://b.test/');alert(1);//"),
+            title: String::from("</div><script>alert(1)</script>"),
+            created_at: 0,
+        }]
+    }
+
+    /// Renders every internal page with the test token.
+    fn all_pages() -> Vec<(&'static str, String)> {
+        let adblocker = Adblocker::new();
+        #[allow(unused_mut)]
+        let mut pages = vec![
+            ("newtab-empty", render_newtab_html(&[], TEST_TOK)),
+            ("newtab", render_newtab_html(&sample_history(), TEST_TOK)),
+            ("history", render_history_html(&sample_history(), TEST_TOK)),
+            ("history-empty", render_history_html(&[], TEST_TOK)),
+            (
+                "bookmarks",
+                render_bookmarks_html(&sample_bookmarks(), TEST_TOK),
+            ),
+            (
+                "downloads",
+                render_downloads_html(std::path::Path::new("/tmp/dl"), TEST_TOK),
+            ),
+            (
+                "settings",
+                render_settings_html(
+                    &BrowserSettings::default(),
+                    std::path::Path::new("/tmp/settings.toml"),
+                    &adblocker,
+                    TEST_TOK,
+                ),
+            ),
+            (
+                "warning",
+                render_https_warning_html("http://insecure.test/page", TEST_TOK),
+            ),
+            (
+                "adblock-debug",
+                render_adblock_debug_html(&adblocker, TEST_TOK),
+            ),
+        ];
+        #[cfg(debug_assertions)]
+        pages.push(("selftest", render_selftest_html(TEST_TOK)));
+        pages
+    }
+
+    #[test]
+    fn test_ipc_send_js_prefixes_token() {
+        let js = ipc_send_js(TEST_TOK);
+        assert!(js.contains("var __EMBER_TOK = '0123abcdef';"));
+        assert!(js.contains("window.ipc.postMessage('ember_tok:' + __EMBER_TOK + ':' + m)"));
+        // Token is escaped as a JS string even though it is expected to be hex.
+        let hostile = ipc_send_js("a'</script>");
+        assert!(hostile.contains("var __EMBER_TOK = 'a\\'\\x3C/script\\x3E';"));
+    }
+
+    #[test]
+    fn test_internal_pages_only_send_token_prefixed_ipc() {
+        let expected_send = "window.ipc.postMessage('ember_tok:' + __EMBER_TOK + ':' + m)";
+        for (name, html) in all_pages() {
+            assert!(
+                html.contains("var __EMBER_TOK = '0123abcdef';"),
+                "{name}: token constant missing"
+            );
+            // The only direct postMessage call is the one inside the shared emberSend helper.
+            assert_eq!(
+                html.matches("postMessage(").count(),
+                1,
+                "{name}: unexpected direct postMessage call"
+            );
+            assert!(html.contains(expected_send), "{name}: helper missing");
+            for bare in [
+                "postMessage('settings_",
+                "postMessage('navigate:",
+                "postMessage('history_",
+                "postMessage('bookmark_",
+                "postMessage('https_proceed:",
+                "postMessage(m)",
+            ] {
+                assert!(!html.contains(bare), "{name}: bare IPC `{bare}` found");
+            }
+        }
+    }
+
+    #[test]
+    fn test_internal_pages_have_no_doubled_braces_in_css() {
+        for (name, html) in all_pages() {
+            let style_start = html.find("<style>").expect("style start");
+            let style_end = html.find("</style>").expect("style end");
+            let css = &html[style_start..style_end];
+            assert!(!css.contains("{{"), "{name}: doubled open brace in CSS");
+            assert!(!css.contains("}}"), "{name}: doubled close brace in CSS");
+            assert_eq!(
+                css.matches('{').count(),
+                css.matches('}').count(),
+                "{name}: unbalanced CSS braces"
+            );
+        }
+    }
+
+    fn assert_balanced_single_braces(label: &str, text: &str) {
+        assert!(
+            !text.contains("{{"),
+            "{label} contains a doubled open brace"
+        );
+        assert!(
+            !text.contains("}}"),
+            "{label} contains a doubled close brace"
+        );
+        let mut depth: i64 = 0;
+        for ch in text.chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    assert!(depth >= 0, "{label}: unmatched close brace");
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(depth, 0, "{label}: unbalanced braces");
+    }
+
+    #[test]
+    fn test_shared_consts_use_single_braces() {
+        assert_balanced_single_braces("SHARED_INTERNAL_CSS", SHARED_INTERNAL_CSS);
+        assert_balanced_single_braces("SETTINGS_CSS", SETTINGS_CSS);
+        assert!(SHARED_INTERNAL_CSS.contains("html, body {"));
+        assert!(SHARED_INTERNAL_CSS.contains("* { box-sizing: border-box;"));
+        // SETTINGS_JS legitimately nests blocks (`} }`), so only check balance and that no
+        // format!-style `{{` escapes leaked into it.
+        assert!(!SETTINGS_JS.contains("{{"));
+        assert_eq!(
+            SETTINGS_JS.matches('{').count(),
+            SETTINGS_JS.matches('}').count()
+        );
+        assert!(SETTINGS_JS.contains("emberSend(m)"));
+        assert!(!SETTINGS_JS.contains("postMessage"));
+    }
+
+    #[test]
+    fn test_history_and_bookmarks_escape_untrusted_values() {
+        let html = render_history_html(&sample_history(), TEST_TOK);
+        assert!(!html.contains("<img src=x"));
+        assert!(html.contains("&lt;img src=x onerror=alert(1)&gt; &#39;quoted&#39;"));
+        assert!(html.contains(r#"data-url="https://a.test/it&#39;s&quot;&lt;b&gt;&amp;\x""#));
+        assert!(html.contains("onclick=\"delHistory(this.dataset.url)\""));
+
+        let html = render_bookmarks_html(&sample_bookmarks(), TEST_TOK);
+        assert!(!html.contains("<script>alert(1)"));
+        assert!(html.contains(r#"data-url="https://b.test/&#39;);alert(1);//""#));
+        assert!(!html.contains("go('https://b.test"));
+    }
+
+    #[test]
+    fn test_escape_html() {
+        assert_eq!(
+            escape_html(r#"<a href="x">'&'</a>"#),
+            "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;"
+        );
+    }
+
+    #[test]
+    fn test_escape_js_script_string() {
+        assert_eq!(escape_js_script_string("a'b\\c"), "a\\'b\\\\c");
+        assert_eq!(
+            escape_js_script_string("</script>&\""),
+            "\\x3C/script\\x3E\\x26\\x22"
+        );
+        assert_eq!(escape_js_script_string("l1\nl2\r"), "l1\\nl2\\r");
+        assert_eq!(
+            escape_js_script_string("x\u{2028}y\u{2029}"),
+            "x\\u2028y\\u2029"
+        );
     }
 }

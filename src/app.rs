@@ -126,8 +126,13 @@ pub(crate) enum AppEvent {
     Tick,
     /// Raw IPC command string received from the top Chrome UI WebView.
     UiIpc(String),
-    /// Raw IPC message emitted inside a tab's content WebView.
-    PageIpc { tab_id: usize, payload: String },
+    /// Raw IPC message emitted inside a tab's content WebView. `source_uri` is the document URI
+    /// reported by the webview for the sender (used to reject privileged messages from web pages).
+    PageIpc {
+        tab_id: usize,
+        payload: String,
+        source_uri: String,
+    },
     /// Document title updated inside a tab's page WebView.
     TabTitleChanged { tab_id: usize, title: String },
     /// Page load started or finished inside a tab's page WebView.
@@ -138,8 +143,9 @@ pub(crate) enum AppEvent {
     },
     /// A network request was blocked by the built-in adblocker inside `tab_id`.
     AdBlocked { tab_id: usize },
-    /// A page requested opening a URL in a new window/tab (`target="_blank"` or `window.open`).
-    OpenInNewTab(String),
+    /// A page in `tab_id` requested opening a URL in a new window/tab (`target="_blank"` or
+    /// `window.open`). Subject to the popup blocker.
+    OpenInNewTab { tab_id: usize, url: String },
     /// A file download started or completed.
     DownloadUpdated,
     /// HTTPS-only mode intercepted a navigation to an insecure `http://` URL inside `tab_id`.
@@ -235,6 +241,7 @@ fn ensure_active_tab_webview(
             let _ = page_ipc_proxy.send_event(AppEvent::PageIpc {
                 tab_id,
                 payload: request.body().clone(),
+                source_uri: request.uri().to_string(),
             });
         })
         .with_navigation_handler(move |nav_url: String| {
@@ -262,7 +269,10 @@ fn ensure_active_tab_webview(
             });
         })
         .with_new_window_req_handler(move |target_url: String| {
-            let _ = popup_proxy.send_event(AppEvent::OpenInNewTab(target_url));
+            let _ = popup_proxy.send_event(AppEvent::OpenInNewTab {
+                tab_id,
+                url: target_url,
+            });
             false
         })
         .with_download_started_handler(move |dl_url: String, default_path: &mut PathBuf| {
@@ -337,31 +347,119 @@ fn resolve_zoom_for_url(storage: &Storage, url: &str) -> f64 {
         .unwrap_or(1.0)
 }
 
+/// Escapes text for safe inclusion in HTML element content / attribute values.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 16);
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Minimal inline page shown when an omnibox navigation targets a URL blocked by the ad blocker.
+fn blocked_notice_html(url: &str) -> String {
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Blocked</title>\
+         <style>body{{font-family:system-ui,'Segoe UI',sans-serif;margin:0;min-height:100vh;\
+         display:flex;align-items:center;justify-content:center;background:#f8f9fa;color:#202124}}\
+         @media (prefers-color-scheme: dark){{body{{background:#202124;color:#e8eaed}}}}\
+         main{{max-width:640px;padding:24px}}h1{{font-size:20px;font-weight:600;margin:0 0 12px}}\
+         code{{word-break:break-all;opacity:.85}}</style></head><body><main>\
+         <h1>Blocked by Ember's ad blocker</h1><p><code>{}</code></p>\
+         <p>This address matches a filter list rule. Pause the shield to open it.</p>\
+         </main></body></html>",
+        html_escape(url)
+    )
+}
+
+/// Shows the inline "blocked by the ad blocker" notice in the active tab for `target_url`.
+fn show_blocked_notice(tabs: &mut TabManager, env: &mut WebViewEnv<'_>, target_url: &str) {
+    if tabs.active_tab_needs_webview().is_some() {
+        // Materialize with a blank document instead of the tab's previous URL.
+        if let Some(active) = tabs.active_tab_mut() {
+            active.url = String::from("about:blank");
+            active.pending_scroll_restore = false;
+        }
+        let _ = ensure_active_tab_webview(tabs, env);
+    }
+    let html = blocked_notice_html(target_url);
+    if let Some(active) = tabs.active_tab_mut() {
+        active.url = target_url.to_owned();
+        active.title = String::from("Blocked");
+        active.favicon_url = None;
+        active.is_loading = false;
+        active.showing_blocked_notice = true;
+        active.scroll_position = (0.0, 0.0);
+        active.pending_scroll_restore = false;
+        if let Some(webview) = &active.webview {
+            let _ = webview.zoom(1.0);
+            let _ = webview.load_html(&html);
+            let _ = webview.focus();
+        }
+    }
+}
+
+/// Navigates the active tab to `raw_input` (omnibox-style input). Returns `true` if the active
+/// tab started loading the target (not redirected to a singleton page and not blocked).
 fn navigate_active_tab(
     tabs: &mut TabManager,
     env: &mut WebViewEnv<'_>,
     find_state: &mut FindState,
     raw_input: &str,
-) {
-    let mut target_url = ui::normalize_omnibox_input(raw_input, env.settings.get().search_engine);
+) -> bool {
+    // `ember://warning?url=...` must keep its query (normalization canonicalizes it away).
+    let mut target_url = if pages::is_internal_url(raw_input)
+        && pages::canonical_internal_url(raw_input) == Some(pages::WARNING_URL)
+        && pages::warning_target(raw_input).is_some()
+    {
+        raw_input.trim().to_owned()
+    } else {
+        ui::normalize_omnibox_input(raw_input, env.settings.get().search_engine)
+    };
     if let Some(canonical) = pages::is_singleton_internal_url(&target_url) {
         tabs.open_or_focus_internal_page(canonical);
         let _ = ensure_active_tab_webview(tabs, env);
-        return;
+        return false;
     }
     if env.settings.should_intercept_http(&target_url) {
         target_url = pages::warning_url_for(&target_url);
     }
-    if !pages::is_internal_url(&target_url) && env.adblocker.should_block(&target_url) {
-        return;
-    }
+    let active_id = tabs.active_tab_id();
+    tabs.set_pending_typed_url(active_id, None);
 
     find_state.active_match = 0;
     find_state.total_matches = 0;
 
-    let _ = ensure_active_tab_webview(tabs, env);
-    let active_id = tabs.active_tab_id();
+    if !pages::is_internal_url(&target_url) && env.adblocker.should_block(&target_url) {
+        show_blocked_notice(tabs, env, &target_url);
+        return false;
+    }
+
     tabs.reset_blocked_count(active_id);
+
+    if tabs.active_tab_needs_webview().is_some() {
+        // Suspended / lazily-created tab: point it at the new target BEFORE materializing so
+        // only the new URL is loaded (not the stale one first).
+        if let Some(active) = tabs.active_tab_mut() {
+            active.url.clone_from(&target_url);
+            active.favicon_url = derive_default_favicon(&target_url);
+            active.scroll_position = (0.0, 0.0);
+            active.pending_scroll_restore = false;
+            active.showing_blocked_notice = false;
+        }
+        let _ = ensure_active_tab_webview(tabs, env);
+        if let Some(webview) = tabs.active_tab().and_then(|t| t.webview.as_ref()) {
+            let _ = webview.focus();
+        }
+        return true;
+    }
 
     let zoom_factor = resolve_zoom_for_url(env.storage, &target_url);
     let page_ctx = env.page_ctx();
@@ -370,6 +468,7 @@ fn navigate_active_tab(
         active.url.clone_from(&target_url);
         active.favicon_url = derive_default_favicon(&target_url);
         active.scroll_position = (0.0, 0.0);
+        active.showing_blocked_notice = false;
 
         if let Some((title, html)) = pages::render_internal_page(&target_url, &page_ctx) {
             active.title = title;
@@ -388,6 +487,7 @@ fn navigate_active_tab(
             }
         }
     }
+    true
 }
 
 fn reload_active_tab(
@@ -396,24 +496,84 @@ fn reload_active_tab(
     settings: &SettingsStore,
     adblocker: &Adblocker,
 ) {
-    if let Some(active) = tabs.active_tab_mut() {
-        active.blocked_count = 0;
-        let url = active.url.clone();
+    let active_id = tabs.active_tab_id();
+    reload_tab(tabs, active_id, storage, settings, adblocker);
+}
+
+/// Reloads `tab_id` (re-rendering internal pages / the blocked notice from current state).
+fn reload_tab(
+    tabs: &mut TabManager,
+    tab_id: usize,
+    storage: &Storage,
+    settings: &SettingsStore,
+    adblocker: &Adblocker,
+) {
+    if let Some(tab) = tabs.get_tab_mut(tab_id) {
+        tab.blocked_count = 0;
+        let url = tab.url.clone();
         let page_ctx = PageCtx {
             storage,
             settings,
             adblocker,
         };
-        if let Some((title, html)) = pages::render_internal_page(&url, &page_ctx) {
-            active.title = title;
-            active.is_loading = false;
-            if let Some(webview) = &active.webview {
+        if tab.showing_blocked_notice {
+            if adblocker.should_block(&url) {
+                if let Some(webview) = &tab.webview {
+                    let _ = webview.load_html(&blocked_notice_html(&url));
+                }
+            } else {
+                tab.showing_blocked_notice = false;
+                tab.is_loading = true;
+                if let Some(webview) = &tab.webview {
+                    let _ = webview.load_url(&url);
+                }
+            }
+        } else if let Some((title, html)) = pages::render_internal_page(&url, &page_ctx) {
+            tab.title = title;
+            tab.is_loading = false;
+            if let Some(webview) = &tab.webview {
                 let _ = webview.load_html(&html);
             }
-        } else if let Some(webview) = &active.webview {
+        } else if let Some(webview) = &tab.webview {
             let _ = webview.reload();
         }
     }
+}
+
+/// Opens `raw_input` (omnibox-style input, e.g. the homepage or a CLI argument) in a new tab,
+/// normalizing it first. Singleton internal pages are focused instead of duplicated when
+/// `activate` is set. Returns the tab ID.
+fn open_input_in_new_tab(
+    tabs: &mut TabManager,
+    raw_input: &str,
+    engine: SearchEngine,
+    activate: bool,
+) -> usize {
+    let normalized = ui::normalize_omnibox_input(raw_input, engine);
+    if activate {
+        if let Some(canonical) = pages::is_singleton_internal_url(&normalized) {
+            return tabs.open_or_focus_internal_page(canonical).0;
+        }
+    }
+    tabs.create_tab(&normalized, activate)
+}
+
+/// Resets per-tab find state when the active tab changes. Returns `true` if the previous tab
+/// may still show find highlights that should be cleared.
+fn reset_find_state_for_tab_change(
+    find_state: &mut FindState,
+    prev_tab: usize,
+    new_tab: usize,
+) -> bool {
+    if prev_tab == new_tab {
+        return false;
+    }
+    let had_find =
+        find_state.is_open || find_state.total_matches > 0 || find_state.active_match > 0;
+    find_state.is_open = false;
+    find_state.active_match = 0;
+    find_state.total_matches = 0;
+    had_find
 }
 
 fn adjust_active_tab_zoom<F>(tabs: &TabManager, storage: &Storage, f: F)
@@ -443,9 +603,20 @@ fn sync_chrome_ui(
     storage: &Storage,
     adblocker: &Adblocker,
     settings: &SettingsStore,
-    find_state: &FindState,
+    find_state: &mut FindState,
     downloads: &Arc<Mutex<DownloadManager>>,
 ) {
+    // Find state is per tab: every active-tab change (switch/close/new/reopen/duplicate) ends
+    // in a UI sync, so detect it here, clear the old tab's highlights and reset the find bar.
+    static FIND_OWNER_TAB: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let active_id = tabs.active_tab_id();
+    let prev_find_tab = FIND_OWNER_TAB.swap(active_id, std::sync::atomic::Ordering::Relaxed);
+    if reset_find_state_for_tab_change(find_state, prev_find_tab, active_id) {
+        if let Some(webview) = tabs.get_tab(prev_find_tab).and_then(|t| t.webview.as_ref()) {
+            let _ = webview.evaluate_script(find::build_clear_find_script());
+        }
+    }
+
     let summaries = tabs.summaries();
     let appearance = {
         let mut app = ui::query_window_appearance(window);
@@ -561,6 +732,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         init_settings.easylist_enabled,
         init_settings.easyprivacy_enabled,
     );
+    // Honour the persisted global toggle (bench mode overrides it per step below).
+    adblocker.set_enabled(init_settings.adblock_enabled);
     adblocker.set_privacy_flags(
         init_settings.send_dnt_and_gpc,
         init_settings.block_third_party_cookies,
@@ -626,6 +799,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             .spawn(move || {
                 thread::sleep(Duration::from_secs(25));
                 let _ = st_proxy.send_event(AppEvent::SelfTestTimeout);
+                // Hard watchdog: if the event loop is hung (e.g. stuck during startup), the
+                // timeout event above is never processed. A finished self-test exits the
+                // process before this fires.
+                thread::sleep(Duration::from_secs(10));
+                eprintln!("FAIL: self-test hung (event loop unresponsive after 35s)");
+                std::process::exit(1);
             });
     }
 
@@ -670,11 +849,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         init_settings.homepage.clone()
     };
 
-    tabs.create_tab(&initial_url, true);
+    open_input_in_new_tab(&mut tabs, &initial_url, init_settings.search_engine, true);
 
     if bench_runner.is_none() && cli_urls.len() > 1 {
         for url in &cli_urls[1..] {
-            tabs.create_tab(url, false);
+            open_input_in_new_tab(&mut tabs, url, init_settings.search_engine, false);
         }
         if std::env::var("EMBER_BENCH_MATERIALIZE_ALL").is_ok() {
             let active_id = tabs.active_tab_id();
@@ -719,7 +898,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         &storage,
         &adblocker,
         &settings,
-        &find_state,
+        &mut find_state,
         &downloads,
     );
 
@@ -806,7 +985,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         &storage,
                         &adblocker,
                         &settings,
-                        &find_state,
+                        &mut find_state,
                         &downloads,
                     );
                 }
@@ -821,7 +1000,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 &storage,
                 &adblocker,
                 &settings,
-                &find_state,
+                &mut find_state,
                 &downloads,
             );
         }
@@ -869,7 +1048,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &storage,
                     &adblocker,
                     &settings,
-                    &find_state,
+                    &mut find_state,
                     &downloads,
                 );
             }
@@ -896,7 +1075,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &storage,
                     &adblocker,
                     &settings,
-                    &find_state,
+                    &mut find_state,
                     &downloads,
                 );
             }
@@ -918,7 +1097,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     &storage,
                     &adblocker,
                     &settings,
-                    &find_state,
+                    &mut find_state,
                     &downloads,
                 );
             }
@@ -932,7 +1111,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         &storage,
                         &adblocker,
                         &settings,
-                        &find_state,
+                        &mut find_state,
                         &downloads,
                     );
                 }
@@ -947,7 +1126,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -1068,7 +1247,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             }
                             UiCommand::NewTab => {
                                 collapse_overlay_from_host(&mut overlay_controller, "new_tab", &chrome_webview, &window);
-                                tabs.create_tab(&settings.get().homepage, true);
+                                let s = settings.get();
+                                open_input_in_new_tab(&mut tabs, &s.homepage, s.search_engine, true);
                                 let mut env = WebViewEnv {
                                     window: &window,
                                     web_context: &mut web_context,
@@ -1088,7 +1268,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                                 if selftest_active {
@@ -1096,22 +1276,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             UiCommand::NewWindow => {
-                                if let Ok(exe) = std::env::current_exe() {
-                                    let _ = std::process::Command::new(exe).spawn();
-                                }
-                            }
-                            UiCommand::OpenNewTab(target_url) => {
-                                collapse_overlay_from_host(&mut overlay_controller, "open_new_tab", &chrome_webview, &window);
-                                let normalized = ui::normalize_omnibox_input(
-                                    &target_url,
-                                    settings.get().search_engine,
+                                // A second process would share settings.toml and the SQLite
+                                // profile (last writer wins), so open a new tab instead.
+                                eprintln!(
+                                    "[ember] multiple windows are not supported yet; opening a new tab instead"
                                 );
-                                if let Some(canonical) = pages::is_singleton_internal_url(&normalized)
-                                {
-                                    tabs.open_or_focus_internal_page(canonical);
-                                } else {
-                                    tabs.create_tab(&normalized, true);
-                                }
+                                collapse_overlay_from_host(&mut overlay_controller, "new_window", &chrome_webview, &window);
+                                let s = settings.get();
+                                open_input_in_new_tab(&mut tabs, &s.homepage, s.search_engine, true);
                                 let mut env = WebViewEnv {
                                     window: &window,
                                     web_context: &mut web_context,
@@ -1131,7 +1303,38 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
+                                    &downloads,
+                                );
+                            }
+                            UiCommand::OpenNewTab(target_url) => {
+                                collapse_overlay_from_host(&mut overlay_controller, "open_new_tab", &chrome_webview, &window);
+                                open_input_in_new_tab(
+                                    &mut tabs,
+                                    &target_url,
+                                    settings.get().search_engine,
+                                    true,
+                                );
+                                let mut env = WebViewEnv {
+                                    window: &window,
+                                    web_context: &mut web_context,
+                                    storage: &storage,
+                                    adblocker: &adblocker,
+                                    permissions: &permissions,
+                                    settings: &settings,
+                                    downloads: &downloads,
+                                    proxy: &proxy,
+                                    content_bounds: current_content_bounds,
+                                };
+                                let _ = ensure_active_tab_webview(&mut tabs, &mut env);
+                                sync_chrome_ui(
+                                    &chrome_webview,
+                                    &window,
+                                    &tabs,
+                                    &storage,
+                                    &adblocker,
+                                    &settings,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -1175,10 +1378,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 );
                             }
                             UiCommand::OmniboxFocus => {
+                                // Do NOT call `chrome_webview.focus()` here: this IPC is sent from
+                                // the omnibox `focus` event, and WebView2's MoveFocus on an
+                                // already-focused controller bounces focus (blur -> focus), which
+                                // re-fires this IPC and closes any open overlay via the blur handlers.
                                 overlay_controller.on_omnibox_focus();
-                                if selftest_active {
-                                    let _ = chrome_webview.focus();
-                                }
                             }
                             UiCommand::OmniboxBlur => {
                                 overlay_controller.on_omnibox_blur(Instant::now());
@@ -1293,7 +1497,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -1325,7 +1529,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                     if selftest_active {
@@ -1360,7 +1564,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                     if selftest_active {
@@ -1395,7 +1599,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -1407,9 +1611,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &chrome_webview,
                                     &window,
                                 );
-                                if tabs.close_tab(tab_id) == CloseTabOutcome::LastTabClosed {
+                                let outcome = tabs.close_tab(tab_id);
+                                if outcome == CloseTabOutcome::LastTabClosed {
                                     *control_flow = ControlFlow::Exit;
-                                } else {
+                                } else if outcome == CloseTabOutcome::Closed {
                                     let mut env = WebViewEnv {
                                         window: &window,
                                         web_context: &mut web_context,
@@ -1429,7 +1634,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -1461,7 +1666,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -1478,7 +1683,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -1492,7 +1697,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -1524,7 +1729,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -1543,13 +1748,6 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         || trimmed.starts_with("http://")
                                         || trimmed.starts_with("https://")
                                         || trimmed.starts_with("localhost"));
-                                if is_direct_url {
-                                    let normalized = crate::ui::normalize_omnibox_input(
-                                        trimmed,
-                                        settings.get().search_engine,
-                                    );
-                                    storage.mark_url_typed_async(&normalized);
-                                }
                                 let mut env = WebViewEnv {
                                     window: &window,
                                     web_context: &mut web_context,
@@ -1570,13 +1768,20 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     && tabs
                                         .active_tab()
                                         .is_some_and(|t| t.url == normalized_nav);
-                                if !same_selftest_internal {
-                                    navigate_active_tab(
+                                if !same_selftest_internal
+                                    && navigate_active_tab(
                                         &mut tabs,
                                         &mut env,
                                         &mut find_state,
                                         &raw_input,
-                                    );
+                                    )
+                                    && is_direct_url
+                                    && !pages::is_internal_url(&normalized_nav)
+                                {
+                                    // Marked as typed (with the final, post-redirect URL) once
+                                    // the load finishes; see `AppEvent::TabPageLoad`.
+                                    let active_id = tabs.active_tab_id();
+                                    tabs.set_pending_typed_url(active_id, Some(normalized_nav));
                                 }
                                 sync_chrome_ui(
                                     &chrome_webview,
@@ -1585,7 +1790,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                                 if selftest_active {
@@ -1634,7 +1839,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -1665,7 +1870,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -1679,7 +1884,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -1693,7 +1898,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -1706,7 +1911,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -1719,7 +1924,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -1771,7 +1976,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -1786,12 +1991,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
                             UiCommand::ToggleAdblock => {
-                                adblocker.toggle();
+                                let new_state = adblocker.toggle();
+                                settings.update(|s| s.adblock_enabled = new_state);
                                 reload_active_tab(&mut tabs, &storage, &settings, &adblocker);
                                 sync_chrome_ui(
                                     &chrome_webview,
@@ -1800,7 +2006,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -1816,7 +2022,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -1839,7 +2045,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -1855,15 +2061,31 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
                         }
                     }
                 }
-                AppEvent::PageIpc { tab_id, payload } => {
-                    if let Some(page_event) = ui::parse_page_ipc_event(&payload) {
+                AppEvent::PageIpc {
+                    tab_id,
+                    payload,
+                    source_uri,
+                } => {
+                    let sender_url = tabs.get_tab(tab_id).map(|t| t.url.clone());
+                    let parsed = ui::parse_page_ipc_event_checked(
+                        &payload,
+                        ui::internal_ipc_token(),
+                        sender_url.as_deref(),
+                        &source_uri,
+                    )
+                    .filter(|event| {
+                        // Shortcuts / tab control / navigation only from the focused tab.
+                        !ui::page_event_requires_active_sender(event)
+                            || tab_id == tabs.active_tab_id()
+                    });
+                    if let Some(page_event) = parsed {
                         if overlay_controller.is_expanded()
                             && matches!(
                                 page_event,
@@ -1888,7 +2110,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         }
                         match page_event {
                             PageIpcEvent::FirstPaint => {
-                                tabs.reveal_tab(tab_id);
+                                tabs.reveal_tab(tab_id, !overlay_controller.is_omnibox_focused());
                             }
                             PageIpcEvent::Favicon(fav_url) => {
                                 if tabs.update_favicon(tab_id, Some(fav_url)) {
@@ -1899,13 +2121,23 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
                             }
                             PageIpcEvent::Scroll(x, y) => {
                                 tabs.update_scroll_position(tab_id, x, y);
+                            }
+                            // Main-frame only: iframe cosmetic messages arrive on the per-frame
+                            // channel in `adblock::platform` and are applied to that frame.
+                            PageIpcEvent::CosmeticInit(page_url)
+                                if !adblock::cosmetic_message_matches_source(
+                                    &page_url,
+                                    &source_uri,
+                                ) => {}
+                            PageIpcEvent::CosmeticTokens { url, .. }
+                                if !adblock::cosmetic_message_matches_source(&url, &source_uri) => {
                             }
                             PageIpcEvent::CosmeticInit(page_url) => {
                                 let resources = adblocker.cosmetic_resources_for_url(&page_url);
@@ -1973,13 +2205,20 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
                             }
                             PageIpcEvent::ContextOpenNewTab(target_url) => {
-                                if !adblocker.should_block(&target_url) {
+                                // Page-forgeable message: same popup rules as `window.open`.
+                                let allowed = ui::is_safe_web_popup_target(&target_url)
+                                    && tabs.try_consume_popup(tab_id, Instant::now());
+                                if !allowed {
+                                    eprintln!(
+                                        "[ember][popup-blocker] blocked context-menu new tab from tab {tab_id}"
+                                    );
+                                } else if !adblocker.should_block(&target_url) {
                                     tabs.create_tab(&target_url, true);
                                     let mut env = WebViewEnv {
                                         window: &window,
@@ -2000,12 +2239,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
                             }
                             PageIpcEvent::ContextCopyLink(href) => {
+                                // Only reached for the active tab (see the sender filter above).
                                 context_menu::copy_text_to_clipboard(&href);
                             }
                             PageIpcEvent::ContextInspect => {
@@ -2017,6 +2257,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             PageIpcEvent::InternalNavigate(raw_target) => {
+                                let Some(safe_target) = ui::resolve_internal_navigation(
+                                    &raw_target,
+                                    settings.get().search_engine,
+                                ) else {
+                                    return;
+                                };
                                 let mut env = WebViewEnv {
                                     window: &window,
                                     web_context: &mut web_context,
@@ -2032,7 +2278,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &mut tabs,
                                     &mut env,
                                     &mut find_state,
-                                    &raw_target,
+                                    &safe_target,
                                 );
                                 sync_chrome_ui(
                                     &chrome_webview,
@@ -2041,21 +2287,21 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
                             PageIpcEvent::HistoryClear => {
                                 storage.clear_history();
-                                reload_active_tab(&mut tabs, &storage, &settings, &adblocker);
+                                reload_tab(&mut tabs, tab_id, &storage, &settings, &adblocker);
                             }
                             PageIpcEvent::HistoryDelete(del_url) => {
                                 storage.delete_history_url(&del_url);
-                                reload_active_tab(&mut tabs, &storage, &settings, &adblocker);
+                                reload_tab(&mut tabs, tab_id, &storage, &settings, &adblocker);
                             }
                             PageIpcEvent::BookmarkRemove(rem_url) => {
                                 storage.remove_bookmark(&rem_url);
-                                reload_active_tab(&mut tabs, &storage, &settings, &adblocker);
+                                reload_tab(&mut tabs, tab_id, &storage, &settings, &adblocker);
                                 sync_chrome_ui(
                                     &chrome_webview,
                                     &window,
@@ -2063,12 +2309,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
                             PageIpcEvent::ShortcutNewTab => {
-                                tabs.create_tab(&settings.get().homepage, true);
+                                let s = settings.get();
+                                open_input_in_new_tab(&mut tabs, &s.homepage, s.search_engine, true);
                                 let mut env = WebViewEnv {
                                     window: &window,
                                     web_context: &mut web_context,
@@ -2088,15 +2335,15 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
                             PageIpcEvent::ShortcutCloseTab => {
-                                let active_id = tabs.active_tab_id();
-                                if tabs.close_tab(active_id) == CloseTabOutcome::LastTabClosed {
+                                let outcome = tabs.close_tab(tab_id);
+                                if outcome == CloseTabOutcome::LastTabClosed {
                                     *control_flow = ControlFlow::Exit;
-                                } else {
+                                } else if outcome == CloseTabOutcome::Closed {
                                     let mut env = WebViewEnv {
                                         window: &window,
                                         web_context: &mut web_context,
@@ -2116,7 +2363,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -2142,7 +2389,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -2168,7 +2415,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -2194,7 +2441,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -2220,7 +2467,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -2234,7 +2481,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -2269,7 +2516,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
@@ -2290,7 +2537,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -2303,7 +2550,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -2316,11 +2563,15 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
+                            PageIpcEvent::UserActivation => {
+                                tabs.note_user_activation(tab_id, Instant::now());
+                            }
                             PageIpcEvent::PointerDown => {
+                                tabs.note_user_activation(tab_id, Instant::now());
                                 collapse_overlay_from_host(
                                     &mut overlay_controller,
                                     "page_pointer_down",
@@ -2329,9 +2580,16 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 );
                             }
                             PageIpcEvent::SpaNav(spa_url) => {
+                                let old_url = tabs.get_tab(tab_id).map(|t| t.url.clone());
                                 let changed = tabs.update_page_load(tab_id, spa_url.clone(), false);
                                 if let Some(tab) = tabs.get_tab(tab_id) {
-                                    storage.record_visit_async(&tab.url, &tab.title);
+                                    // Only real URL changes (not replaceState / hash-only
+                                    // updates of the same document URL) create a visit.
+                                    if old_url.as_deref().is_some_and(|old| {
+                                        crate::tabs::should_record_spa_visit(old, &tab.url)
+                                    }) {
+                                        storage.record_visit_async(&tab.url, &tab.title);
+                                    }
                                 }
                                 if changed {
                                     sync_chrome_ui(
@@ -2341,22 +2599,22 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         &storage,
                                         &adblocker,
                                         &settings,
-                                        &find_state,
+                                        &mut find_state,
                                         &downloads,
                                     );
                                 }
                             }
                             PageIpcEvent::SettingsSet { key, value } => {
                                 let mut theme_to_apply = None;
-                                let mut suspend_to_apply = None;
+                                let mut suspend_changed = false;
                                 let mut reload_needed = false;
 
-                                settings.update(|s| match key.as_str() {
+                                let updated = settings.update(|s| match key.as_str() {
                                     "search_engine" => {
                                         s.search_engine = SearchEngine::parse(&value);
                                     }
                                     "homepage" => {
-                                        s.homepage = value.clone();
+                                        s.homepage = ui::normalize_homepage(&value, s.search_engine);
                                     }
                                     "theme" => {
                                         let theme = ThemePreference::parse(&value);
@@ -2365,9 +2623,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     }
                                     "tab_suspend_minutes" => {
                                         if let Ok(mins) = value.parse::<u64>() {
-                                            s.tab_suspend_minutes = mins;
-                                            suspend_to_apply =
-                                                Some(Duration::from_secs(mins.saturating_mul(60)));
+                                            // Same clamp as the TOML parser; 0 means "Never".
+                                            s.tab_suspend_minutes =
+                                                crate::settings::clamp_suspend_minutes(mins);
+                                            suspend_changed = true;
                                         }
                                     }
                                     "adblock_enabled" => {
@@ -2425,15 +2684,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         let _ = wv.set_background_color(content_bg);
                                     });
                                 }
-                                if let Some(suspend) = suspend_to_apply {
-                                    tabs.set_suspend_timeout(suspend);
+                                if suspend_changed {
+                                    // `tab_suspend_timeout()` maps 0 ("Never") to 365 days.
+                                    tabs.set_suspend_timeout(updated.tab_suspend_timeout());
                                 }
-                                if reload_needed
-                                    && tabs
-                                        .active_tab()
-                                        .is_some_and(|t| t.url == pages::SETTINGS_URL)
-                                {
-                                    reload_active_tab(&mut tabs, &storage, &settings, &adblocker);
+                                if reload_needed {
+                                    reload_tab(&mut tabs, tab_id, &storage, &settings, &adblocker);
                                 }
                                 sync_chrome_ui(
                                     &chrome_webview,
@@ -2442,7 +2698,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -2463,12 +2719,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                                     .send_event(AppEvent::RefreshSettingsPage);
                                             });
                                         if tabs
-                                            .active_tab()
+                                            .get_tab(tab_id)
                                             .is_some_and(|t| t.url == pages::SETTINGS_URL)
                                         {
-                                            reload_active_tab(
-                                                &mut tabs, &storage, &settings, &adblocker,
-                                            );
+                                            reload_tab(&mut tabs, tab_id, &storage, &settings, &adblocker);
                                         }
                                     }
                                     "clear_data" => {
@@ -2496,12 +2750,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                             }
                                         }
                                         if tabs
-                                            .active_tab()
+                                            .get_tab(tab_id)
                                             .is_some_and(|t| t.url == pages::SETTINGS_URL)
                                         {
-                                            reload_active_tab(
-                                                &mut tabs, &storage, &settings, &adblocker,
-                                            );
+                                            reload_tab(&mut tabs, tab_id, &storage, &settings, &adblocker);
                                         }
                                     }
                                     "allowlist_add" => {
@@ -2509,12 +2761,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         if !host.is_empty() {
                                             adblocker.set_site_allowlisted(host, true);
                                             if tabs
-                                                .active_tab()
-                                                .is_some_and(|t| t.url == pages::SETTINGS_URL)
-                                            {
-                                                reload_active_tab(
-                                                    &mut tabs, &storage, &settings, &adblocker,
-                                                );
+                                            .get_tab(tab_id)
+                                            .is_some_and(|t| t.url == pages::SETTINGS_URL)
+                                        {
+                                            reload_tab(&mut tabs, tab_id, &storage, &settings, &adblocker);
                                             }
                                         }
                                     }
@@ -2523,16 +2773,20 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         if !host.is_empty() {
                                             adblocker.set_site_allowlisted(host, false);
                                             if tabs
-                                                .active_tab()
-                                                .is_some_and(|t| t.url == pages::SETTINGS_URL)
-                                            {
-                                                reload_active_tab(
-                                                    &mut tabs, &storage, &settings, &adblocker,
-                                                );
+                                            .get_tab(tab_id)
+                                            .is_some_and(|t| t.url == pages::SETTINGS_URL)
+                                        {
+                                            reload_tab(&mut tabs, tab_id, &storage, &settings, &adblocker);
                                             }
                                         }
                                     }
                                     "open" => {
+                                        let Some(safe_target) = ui::resolve_internal_navigation(
+                                            &arg,
+                                            settings.get().search_engine,
+                                        ) else {
+                                            return;
+                                        };
                                         let mut env = WebViewEnv {
                                             window: &window,
                                             web_context: &mut web_context,
@@ -2548,7 +2802,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                             &mut tabs,
                                             &mut env,
                                             &mut find_state,
-                                            &arg,
+                                            &safe_target,
                                         );
                                     }
                                     "run_selftest" => {
@@ -2577,7 +2831,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -2602,7 +2856,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &storage,
                                     &adblocker,
                                     &settings,
-                                    &find_state,
+                                    &mut find_state,
                                     &downloads,
                                 );
                             }
@@ -2611,7 +2865,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 }
                 AppEvent::TabTitleChanged { tab_id, title } => {
                     if let Some(tab) = tabs.get_tab(tab_id) {
-                        storage.update_visit_title_async(&tab.url, &title);
+                        if !tab.showing_blocked_notice {
+                            storage.update_visit_title_async(&tab.url, &title);
+                        }
                     }
                     if tabs.update_title(tab_id, title) {
                         sync_chrome_ui(
@@ -2621,7 +2877,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             &storage,
                             &adblocker,
                             &settings,
-                            &find_state,
+                            &mut find_state,
                             &downloads,
                         );
                     }
@@ -2641,9 +2897,15 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     }
                     let changed = tabs.update_page_load(tab_id, url, is_loading);
                     if !is_loading {
-                        tabs.reveal_tab(tab_id);
-                        if let Some(tab) = tabs.get_tab(tab_id) {
+                        tabs.reveal_tab(tab_id, !overlay_controller.is_omnibox_focused());
+                        let typed_final_url = tabs.take_typed_url_on_load_finished(tab_id);
+                        if let Some(tab) = tabs.get_tab(tab_id).filter(|t| !t.showing_blocked_notice) {
                             storage.record_visit_async(&tab.url, &tab.title);
+                            // Mark the *final* (post-redirect) URL as typed, after its visit row
+                            // exists, exactly once per omnibox navigation.
+                            if let Some(typed) = &typed_final_url {
+                                storage.mark_url_typed_async(typed);
+                            }
                             let factor = resolve_zoom_for_url(&storage, &tab.url);
                             if let Some(webview) = &tab.webview {
                                 let _ = webview.zoom(factor);
@@ -2688,7 +2950,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             &storage,
                             &adblocker,
                             &settings,
-                            &find_state,
+                            &mut find_state,
                             &downloads,
                         );
                     }
@@ -2702,8 +2964,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         let _ = chrome_webview.evaluate_script(&script);
                     }
                 }
-                AppEvent::OpenInNewTab(url) => {
-                    if !adblocker.should_block(&url) {
+                AppEvent::OpenInNewTab { tab_id, url } => {
+                    // Popup blocker: require a recent, unused user activation in the source tab.
+                    let allowed = ui::is_safe_web_popup_target(&url)
+                        && tabs.try_consume_popup(tab_id, Instant::now());
+                    if !allowed {
+                        eprintln!("[ember][popup-blocker] blocked new window from tab {tab_id}");
+                    } else if !adblocker.should_block(&url) {
                         tabs.create_tab(&url, true);
                         let mut env = WebViewEnv {
                             window: &window,
@@ -2724,7 +2991,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             &storage,
                             &adblocker,
                             &settings,
-                            &find_state,
+                            &mut find_state,
                             &downloads,
                         );
                     }
@@ -2751,7 +3018,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             &storage,
                             &adblocker,
                             &settings,
-                            &find_state,
+                            &mut find_state,
                             &downloads,
                         );
                     } else if let Some(tab) = tabs.get_tab_mut(tab_id) {
@@ -2780,13 +3047,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             &storage,
                             &adblocker,
                             &settings,
-                            &find_state,
+                            &mut find_state,
                             &downloads,
                         );
                     }
                 }
                 AppEvent::TabRevealTimeout { tab_id } => {
-                    tabs.reveal_tab(tab_id);
+                    tabs.reveal_tab(tab_id, !overlay_controller.is_omnibox_focused());
                 }
                 AppEvent::OmniboxSuggestions {
                     query_id,
@@ -3033,5 +3300,64 @@ mod tests {
         let rebuilt = build_selftest_report_json(&parsed.items);
         assert!(rebuilt.contains("\"pass\":true"));
         assert!(rebuilt.contains("\"pass\":false"));
+    }
+
+    #[test]
+    fn test_find_state_resets_on_tab_switch() {
+        let mut fs = FindState {
+            is_open: true,
+            query: String::from("needle"),
+            active_match: 2,
+            total_matches: 7,
+        };
+        // Same tab: untouched.
+        assert!(!reset_find_state_for_tab_change(&mut fs, 3, 3));
+        assert!(fs.is_open);
+        assert_eq!(fs.total_matches, 7);
+        // Different tab: closed and counts cleared; caller must clear old highlights.
+        assert!(reset_find_state_for_tab_change(&mut fs, 3, 4));
+        assert!(!fs.is_open);
+        assert_eq!((fs.active_match, fs.total_matches), (0, 0));
+        // Nothing open: switching needs no highlight clearing.
+        assert!(!reset_find_state_for_tab_change(&mut fs, 4, 5));
+    }
+
+    #[test]
+    fn test_blocked_notice_html_escapes_url() {
+        let html = blocked_notice_html("https://ads.example/<script>alert('x')</script>&a=\"1\"");
+        assert!(html.contains("<title>Blocked</title>"));
+        assert!(!html.contains("<script>"));
+        assert!(
+            html.contains("&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;&amp;a=&quot;1&quot;")
+        );
+    }
+
+    #[test]
+    fn test_open_input_in_new_tab_normalizes() {
+        let mut tabs = TabManager::new(Duration::from_secs(60));
+        let id = open_input_in_new_tab(&mut tabs, "example.com", SearchEngine::DuckDuckGo, true);
+        assert_eq!(
+            tabs.get_tab(id).map(|t| t.url.as_str()),
+            Some("https://example.com")
+        );
+        let settings_id = open_input_in_new_tab(
+            &mut tabs,
+            "ember://settings",
+            SearchEngine::DuckDuckGo,
+            true,
+        );
+        let again = open_input_in_new_tab(
+            &mut tabs,
+            "EMBER://settings/",
+            SearchEngine::DuckDuckGo,
+            true,
+        );
+        assert_eq!(settings_id, again);
+        let bg = open_input_in_new_tab(&mut tabs, "", SearchEngine::DuckDuckGo, false);
+        assert_eq!(
+            tabs.get_tab(bg).map(|t| t.url.as_str()),
+            Some("ember://newtab")
+        );
+        assert_eq!(tabs.active_tab_id(), settings_id);
     }
 }

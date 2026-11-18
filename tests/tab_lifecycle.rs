@@ -124,3 +124,41 @@ fn test_integration_recently_closed_stack_and_reopen() {
     assert_eq!(manager.close_tab(reopened1), CloseTabOutcome::Closed);
     assert_eq!(manager.close_tab(t1), CloseTabOutcome::LastTabClosed);
 }
+
+#[test]
+fn test_integration_close_unknown_tab_not_found() {
+    let mut manager = TabManager::new(Duration::from_secs(300));
+    let t1 = manager.create_tab("https://site1.org", true);
+    assert_eq!(manager.close_tab(t1 + 42), CloseTabOutcome::NotFound);
+    assert_eq!(manager.summaries().len(), 1);
+    assert!(manager.recently_closed().is_empty());
+}
+
+#[test]
+fn test_integration_never_suspend_setting_does_not_suspend() {
+    let settings = ember::settings::BrowserSettings {
+        tab_suspend_minutes: 0,
+        ..Default::default()
+    };
+    let timeout = settings.tab_suspend_timeout();
+    assert!(timeout >= Duration::from_secs(365 * 24 * 3600));
+
+    let mut manager = TabManager::new(timeout);
+    let _active = manager.create_tab("https://active.test", true);
+    let _bg = manager.create_tab("https://idle.test", false);
+    let suspended = manager.suspend_inactive_tabs(Instant::now() + Duration::from_secs(3600));
+    assert!(suspended.is_empty());
+}
+
+#[test]
+fn test_integration_popup_blocker_requires_activation() {
+    let mut manager = TabManager::new(Duration::from_secs(300));
+    let t1 = manager.create_tab("https://site1.org", true);
+    let now = Instant::now();
+    assert!(!manager.try_consume_popup(t1, now));
+    manager.note_user_activation(t1, now);
+    assert!(manager.try_consume_popup(t1, now + Duration::from_millis(100)));
+    assert!(!manager.try_consume_popup(t1, now + Duration::from_millis(200)));
+    manager.note_user_activation(t1, now + Duration::from_secs(5));
+    assert!(!manager.try_consume_popup(t1, now + Duration::from_secs(7)));
+}

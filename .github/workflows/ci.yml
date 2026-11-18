@@ -104,8 +104,9 @@ jobs:
           - os: windows-latest
             artifact-name: ember-windows-x64
             dist-glob: target/dist/*.zip
+          # macos-latest runners are Apple Silicon (arm64)
           - os: macos-latest
-            artifact-name: ember-macos-x64
+            artifact-name: ember-macos-arm64
             dist-glob: target/dist/*.tar.gz
           - os: ubuntu-latest
             artifact-name: ember-linux-x64

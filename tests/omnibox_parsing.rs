@@ -98,3 +98,39 @@ fn test_integration_omnibox_search_query_generation() {
         "https://duckduckgo.com/?q=c%2B%2B+%26+rust%3A+100%25+fast"
     );
 }
+
+#[test]
+fn test_integration_internal_navigation_rejects_unsafe_schemes() {
+    use ember::ui::resolve_internal_navigation;
+    assert_eq!(
+        resolve_internal_navigation("crates.io", SearchEngine::DuckDuckGo),
+        Some(String::from("https://crates.io"))
+    );
+    assert_eq!(
+        resolve_internal_navigation("file:///C:/Windows/win.ini", SearchEngine::DuckDuckGo),
+        None
+    );
+}
+
+#[test]
+fn test_integration_untrusted_page_cannot_send_privileged_ipc() {
+    use ember::ui::{internal_ipc_token, parse_page_ipc_event_checked};
+    let tok = internal_ipc_token();
+    // A web page without the token cannot change settings, even if it guesses the format.
+    assert_eq!(
+        parse_page_ipc_event_checked(
+            "settings_set:adblock_enabled=false",
+            tok,
+            Some("https://evil.example/"),
+            "https://evil.example/"
+        ),
+        None
+    );
+    let forged = format!("ember_tok:{tok}:history_clear:");
+    // Even the right token is refused when the sending tab is not an internal page.
+    assert_eq!(
+        parse_page_ipc_event_checked(&forged, tok, Some("https://evil.example/"), ""),
+        None
+    );
+    assert!(parse_page_ipc_event_checked(&forged, tok, Some("ember://history"), "").is_some());
+}

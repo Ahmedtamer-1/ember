@@ -27,15 +27,69 @@ pub const FIND_INIT_SCRIPT: &str = r#"
     (document.head || document.documentElement).appendChild(style);
   }
 
-  function isNodeVisible(el) {
-    if (!el || !el.tagName) return false;
-    var tag = el.tagName.toUpperCase();
-    if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE' || tag === 'SVG') {
+  function tagOf(el) {
+    return el && el.tagName ? String(el.tagName).toUpperCase() : '';
+  }
+
+  function isClosedDetails(el) {
+    return tagOf(el) === 'DETAILS' && !el.open;
+  }
+
+  // Returns true if `el` itself prevents its subtree from rendering (display:none, a closed
+  // <details> parent when `el` is not its summary, or Ember's own context menu).
+  function isSelfHidden(el) {
+    if (el.id === '__ember-ctx-menu') return true;
+    var parent = el.parentElement;
+    if (parent && isClosedDetails(parent) && tagOf(el) !== 'SUMMARY') return true;
+    var style = window.getComputedStyle(el);
+    return !style || style.display === 'none';
+  }
+
+  // Walks `el` and its ancestors, caching the result for every element on the path so a
+  // single search touches each element at most once.
+  function isAncestryHidden(el, cache) {
+    var chain = [];
+    var hidden = false;
+    var cur = el;
+    while (cur && cur.nodeType === 1) {
+      if (cache.has(cur)) {
+        hidden = cache.get(cur);
+        break;
+      }
+      chain.push(cur);
+      if (isSelfHidden(cur)) {
+        hidden = true;
+        break;
+      }
+      cur = cur.parentElement;
+    }
+    for (var i = 0; i < chain.length; i++) {
+      cache.set(chain[i], hidden);
+    }
+    return hidden;
+  }
+
+  // `parent` is the element that directly contains a text node.
+  function isTextParentVisible(parent, cache) {
+    if (!parent || !parent.tagName) return false;
+    var tag = tagOf(parent);
+    if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE' ||
+        tag === 'TEXTAREA' || tag === 'TITLE') {
       return false;
     }
-    if (el.id === '__ember-ctx-menu') return false;
-    var style = window.getComputedStyle(el);
-    return style && style.display !== 'none' && style.visibility !== 'hidden';
+    // Text sitting directly inside a closed <details> (outside its summary) is not rendered.
+    if (isClosedDetails(parent)) return false;
+    if (isAncestryHidden(parent, cache)) return false;
+    // `visibility` is inherited (and can be re-enabled by descendants), so the computed value
+    // on the direct parent is authoritative.
+    var style = window.getComputedStyle(parent);
+    if (!style || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    if (typeof parent.checkVisibility === 'function') {
+      try {
+        if (!parent.checkVisibility({ visibilityProperty: true })) return false;
+      } catch (_) {}
+    }
+    return true;
   }
 
   function collectMatchRanges(needle) {
@@ -44,10 +98,17 @@ pub const FIND_INIT_SCRIPT: &str = r#"
     var lowerNeedle = needle.toLowerCase();
     var nLen = lowerNeedle.length;
     var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+    var hiddenCache = new Map();
+    var parentVisibleCache = new Map();
     var node;
     while ((node = walker.nextNode())) {
       var parent = node.parentElement;
-      if (!isNodeVisible(parent)) continue;
+      var visible = parentVisibleCache.get(parent);
+      if (visible === undefined) {
+        visible = isTextParentVisible(parent, hiddenCache);
+        parentVisibleCache.set(parent, visible);
+      }
+      if (!visible) continue;
       var text = node.nodeValue;
       if (!text) continue;
       var lowerText = text.toLowerCase();
@@ -173,6 +234,11 @@ fn escape_js_string(input: &str) -> String {
             '\'' => out.push_str("\\'"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            '<' => out.push_str("\\x3C"),
+            '>' => out.push_str("\\x3E"),
+            '\0' => out.push_str("\\x00"),
             _ => out.push(ch),
         }
     }
@@ -182,6 +248,28 @@ fn escape_js_string(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_escape_js_string_special_chars() {
+        assert_eq!(escape_js_string("a\\b'c"), "a\\\\b\\'c");
+        assert_eq!(escape_js_string("x\ny\rz"), "x\\ny\\rz");
+        assert_eq!(escape_js_string("p\u{2028}q\u{2029}r"), "p\\u2028q\\u2029r");
+        assert_eq!(
+            escape_js_string("</script><b>"),
+            "\\x3C/script\\x3E\\x3Cb\\x3E"
+        );
+        let script = build_find_script("</script>\u{2028}", true, true);
+        assert!(!script.contains("</script>"));
+        assert!(!script.contains('\u{2028}'));
+    }
+
+    #[test]
+    fn test_find_script_checks_ancestor_visibility() {
+        assert!(FIND_INIT_SCRIPT.contains("isAncestryHidden"));
+        assert!(FIND_INIT_SCRIPT.contains("parentElement"));
+        assert!(FIND_INIT_SCRIPT.contains("checkVisibility"));
+        assert!(FIND_INIT_SCRIPT.contains("DETAILS"));
+    }
 
     #[test]
     fn test_parse_find_result_and_script() {
