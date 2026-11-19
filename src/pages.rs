@@ -82,12 +82,24 @@ pub fn warning_target(url: &str) -> Option<String> {
 /// Renders an internal `ember://` page into `(page_title, html_document)`.
 pub fn render_internal_page(url: &str, ctx: &PageCtx<'_>) -> Option<(String, String)> {
     let (title, html) = render_internal_page_unthemed(url, ctx)?;
-    let css = crate::theme::current().page_css();
-    if css.is_empty() {
-        Some((title, html))
+    let theme = crate::theme::current();
+    let css = theme.page_css();
+    let html = if css.is_empty() {
+        html
     } else {
-        Some((title, crate::theme::inject_style(&html, &css)))
+        crate::theme::inject_style(&html, &css)
+    };
+    // The wallpaper runtime (video layer + pause logic) is only added where it has work to do,
+    // plus the theme editor so live previews can switch it on.
+    if theme.wallpaper_active("pages") || canonical_internal_url(url) == Some(THEMES_URL) {
+        let reduced = !ctx.settings.get().tab_animations_enabled;
+        let config = crate::theme::page_wallpaper_json(reduced);
+        return Some((
+            title,
+            crate::theme::inject_wallpaper_runtime(&html, &config),
+        ));
     }
+    Some((title, html))
 }
 
 fn render_internal_page_unthemed(url: &str, ctx: &PageCtx<'_>) -> Option<(String, String)> {
