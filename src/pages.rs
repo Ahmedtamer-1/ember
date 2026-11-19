@@ -865,7 +865,7 @@ fn extract_display_host(url: &str) -> String {
     host.strip_prefix("www.").unwrap_or(host).to_string()
 }
 
-fn escape_html(input: &str) -> String {
+pub(crate) fn escape_html(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
         match ch {
@@ -929,13 +929,23 @@ function setBool(key, checked) { setVal(key, checked ? 'true' : 'false'); }
 function act(name, arg) { send('settings_action:' + name + (arg ? ':' + arg : '')); }
 function clearData() {
   var parts = [];
-  ['history', 'cookies', 'cache'].forEach(function (id) {
+  ['history', 'cookies', 'cache', 'passwords', 'autofill'].forEach(function (id) {
     if (document.getElementById('cd-' + id).checked) { parts.push(id); }
   });
   var status = document.getElementById('clear-status');
   if (!parts.length) { status.textContent = 'Select at least one item to clear.'; return; }
   act('clear_data', parts.join(','));
   status.textContent = 'Cleared: ' + parts.join(', ');
+}
+function createProfile() {
+  var input = document.getElementById('profile-input');
+  var v = input.value.trim();
+  if (v) { act('profile_create', v); }
+}
+function deleteProfile(name) {
+  if (confirm('Delete the profile "' + name + '"? Its settings, history, bookmarks, cookies and saved passwords will be permanently deleted.')) {
+    act('profile_delete', name);
+  }
 }
 function addAllow() {
   var input = document.getElementById('allow-input');
@@ -944,6 +954,7 @@ function addAllow() {
 }
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Enter' && document.activeElement && document.activeElement.id === 'allow-input') { addAllow(); }
+  if (e.key === 'Enter' && document.activeElement && document.activeElement.id === 'profile-input') { createProfile(); }
 });
 "#;
 
@@ -1050,6 +1061,18 @@ fn render_settings_html(
         r#"<div class="row"><div class="row-text"><div class="row-title">Homepage</div><div class="row-desc">Opened by the Home button and at startup. Use <code>ember://newtab</code> for the new tab page.</div></div><input class="ctl" type="text" value="{}" spellcheck="false" onchange="setVal('homepage', this.value)"></div>"#,
         escape_html(&settings.homepage)
     ));
+    let startup = own(&[
+        ("continue", "Continue where you left off"),
+        ("newtab", "Open the new tab page"),
+        ("homepage", "Open the homepage"),
+    ]);
+    general.push_str(&select_row(
+        "startup_mode",
+        "On startup",
+        "Continue where you left off reopens your tabs; they load when you select them.",
+        &startup,
+        settings.startup_mode.as_str(),
+    ));
     general.push_str(&select_row(
         "theme",
         "Theme",
@@ -1149,8 +1172,35 @@ fn render_settings_html(
         "Fetches autocomplete suggestions from your default search engine as you type. Note: typed text in the address bar is sent to the search engine.",
         settings.search_suggestions_enabled,
     ));
+    privacy.push_str(&switch_row(
+        "offer_save_passwords",
+        "Offer to save passwords",
+        "Uses the password manager built into the system WebView. Passwords are stored encrypted in this profile and filled in on sign-in pages.",
+        settings.offer_save_passwords,
+    ));
+    privacy.push_str(&switch_row(
+        "autofill_enabled",
+        "Autofill forms",
+        "Suggests addresses and other details you entered before when filling in forms.",
+        settings.autofill_enabled,
+    ));
+    privacy.push_str(&switch_row(
+        "clear_site_data_on_exit",
+        "Clear cookies and site data when Ember closes",
+        "Signs you out of sites when Ember closes. Saved passwords and autofill data are kept.",
+        settings.clear_site_data_on_exit,
+    ));
 
-    let clear = r#"<div class="checks"><label><input type="checkbox" id="cd-history" checked> Browsing history</label><label><input type="checkbox" id="cd-cookies"> Cookies and site data</label><label><input type="checkbox" id="cd-cache"> Cached files</label></div><div class="actions"><button class="btn danger" onclick="clearData()">Clear data</button><span id="clear-status" class="status"></span></div>"#;
+    let clear = r#"<div class="checks"><label><input type="checkbox" id="cd-history" checked> Browsing history</label><label><input type="checkbox" id="cd-cookies"> Cookies and site data</label><label><input type="checkbox" id="cd-cache"> Cached files</label><label><input type="checkbox" id="cd-passwords"> Saved passwords</label><label><input type="checkbox" id="cd-autofill"> Autofill data</label></div><div class="actions"><button class="btn danger" onclick="clearData()">Clear data</button><span id="clear-status" class="status"></span></div>"#;
+
+    let profile_ctx = crate::profile::current();
+    let profiles = crate::profile::settings_section_html(
+        profile_ctx,
+        &profile_ctx
+            .map(|ctx| ctx.list_profiles())
+            .unwrap_or_default(),
+        crate::profile::take_flash().as_deref(),
+    );
 
     format!(
         r#"<!DOCTYPE html>
@@ -1174,6 +1224,7 @@ fn render_settings_html(
   <div class="section"><h2>Ad blocker</h2><div class="card">{ads}</div></div>
   <div class="section"><h2>Allowed sites</h2><div class="card">{allow}</div></div>
   <div class="section"><h2>Privacy and security</h2><div class="card">{privacy}</div></div>
+  <div class="section" id="profiles"><h2>Profiles</h2><div class="card">{profiles}</div></div>
   <div class="section"><h2>Clear browsing data</h2><div class="card">{clear}</div></div>
   <div class="status" style="text-align:center;padding:12px 0 24px;">Configuration stored in <code>{config_path}</code></div>
 </div>

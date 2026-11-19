@@ -21,8 +21,10 @@ use crate::{
     find::{self, FindState},
     pages::{self, PageCtx},
     permissions::{self, PermissionManager},
-    privacy,
-    settings::{SearchEngine, SettingsStore, ThemePreference},
+    privacy::{self, ClearKinds},
+    profile::{self, LaunchArgs, ProfileContext, ProfileKind, ProfileRoots},
+    session::{self, SessionSaver},
+    settings::{BrowserSettings, SearchEngine, SettingsStore, StartupMode, ThemePreference},
     storage::Storage,
     tabs::{derive_default_favicon, CloseTabOutcome, TabManager},
     ui::{self, ChromeSyncState, PageIpcEvent, UiCommand, UiConfig},
@@ -31,6 +33,11 @@ use crate::{
 
 /// Interval for checking whether inactive background tabs should be suspended.
 const SUSPEND_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+/// Maximum time to wait for "clear cookies and site data" at startup / exit before moving on.
+const SITE_DATA_CLEAR_TIMEOUT: Duration = Duration::from_secs(3);
+/// Minimum interval between two private windows spawned from this process (stops a page from
+/// flooding the system with processes through the forgeable Ctrl+Shift+N shortcut message).
+const PRIVATE_WINDOW_MIN_INTERVAL: Duration = Duration::from_secs(1);
 
 struct BenchStepResult {
     site_name: &'static str,
@@ -158,6 +165,10 @@ pub(crate) enum AppEvent {
     UiReadyTimeout,
     /// Self-test watchdog timer (~25s) in `--selftest` mode.
     SelfTestTimeout,
+    /// Startup clearing of leftover site data finished (or timed out): load the first tab.
+    StartupClearDone,
+    /// Exit-time clearing of site data finished (`cleared`) or timed out: exit now.
+    ShutdownReady { cleared: bool },
     /// Ranked omnibox suggestions and optional inline autofill computed from the in-memory cache.
     OmniboxSuggestions {
         query_id: u64,
@@ -298,6 +309,7 @@ fn ensure_active_tab_webview(
         let _ = blocked_proxy.send_event(AppEvent::AdBlocked { tab_id });
     });
     permissions::attach_webview_permissions(&webview, Arc::clone(env.permissions));
+    apply_autofill_to_webview(&webview, &current_settings);
 
     // Apply active theme to the new webview
     ui::apply_webview_theme(&webview, current_settings.theme);
@@ -331,6 +343,149 @@ fn ensure_active_tab_webview(
         }
     }
     Ok(true)
+}
+
+/// Applies "Offer to save passwords" / "Autofill forms" to a tab webview. Private windows never
+/// offer to save passwords (their profile is deleted on close).
+fn apply_autofill_to_webview(webview: &WebView, settings: &BrowserSettings) {
+    privacy::apply_autofill_settings(
+        webview,
+        settings.offer_save_passwords && !profile::is_private(),
+        settings.autofill_enabled,
+    );
+}
+
+/// Captures the open tabs for `session.txt`.
+fn snapshot_session(tabs: &TabManager) -> session::Session {
+    let active = tabs.active_tab_id();
+    let summaries = tabs.summaries();
+    session::Session::from_tabs(
+        summaries
+            .iter()
+            .map(|t| (t.url.as_str(), t.title.as_str(), t.id == active)),
+    )
+}
+
+/// The resolved profile plus its single-instance lock (if one could be taken).
+type ResolvedProfile = (ProfileContext, Option<profile::InstanceLock>);
+
+/// Resolves which profile this process runs and takes its single-instance lock.
+/// Returns `Ok(None)` if the profile is already open in another Ember process.
+fn resolve_profile(
+    launch: &LaunchArgs,
+    selftest: bool,
+) -> Result<Option<ResolvedProfile>, Box<dyn Error>> {
+    let lock_or_warn = |dir: &std::path::Path| match profile::try_lock_dir(dir) {
+        Ok(lock) => lock.map(Some),
+        Err(err) => {
+            eprintln!("[ember][profile] could not lock {}: {err}", dir.display());
+            Some(None)
+        }
+    };
+
+    if selftest {
+        let dir = profile::temp_profile_dir(profile::SELFTEST_DIR_PREFIX);
+        std::fs::create_dir_all(&dir)?;
+        let lock = lock_or_warn(&dir).flatten();
+        let ctx = ProfileContext {
+            name: String::from(profile::DEFAULT_PROFILE),
+            kind: ProfileKind::SelfTest,
+            config_dir: dir.clone(),
+            data_dir: dir,
+            roots: None,
+        };
+        return Ok(Some((ctx, lock)));
+    }
+
+    let roots = ProfileRoots::resolve()?;
+    let name = launch.profile.as_deref().map_or_else(
+        || String::from(profile::DEFAULT_PROFILE),
+        |n| roots.canonical_name(n),
+    );
+    let (config_dir, data_dir) = roots.dirs_for(&name);
+    profile::sweep_stale_temp_dirs_async();
+
+    if launch.private {
+        let dir = profile::temp_profile_dir(profile::PRIVATE_DIR_PREFIX);
+        std::fs::create_dir_all(&dir)?;
+        let lock = lock_or_warn(&dir).flatten();
+        profile::seed_private_config(&config_dir, &dir);
+        profile::seed_filters(&data_dir.join("filters"), &dir.join("filters"));
+        let ctx = ProfileContext {
+            name,
+            kind: ProfileKind::Private,
+            config_dir: dir.clone(),
+            data_dir: dir,
+            roots: Some(roots),
+        };
+        return Ok(Some((ctx, lock)));
+    }
+
+    std::fs::create_dir_all(&config_dir)?;
+    std::fs::create_dir_all(&data_dir)?;
+    let Some(lock) = lock_or_warn(&data_dir) else {
+        return Ok(None);
+    };
+    if !profile::is_default_profile(&name) {
+        profile::seed_filters(&roots.data_root.join("filters"), &data_dir.join("filters"));
+    }
+    let ctx = ProfileContext {
+        name,
+        kind: ProfileKind::Normal,
+        config_dir,
+        data_dir,
+        roots: Some(roots),
+    };
+    Ok(Some((ctx, lock)))
+}
+
+/// Opens existing profile `raw` in its own window (no-op for the current profile).
+fn open_profile_window(ctx: &ProfileContext, raw: &str) {
+    if ctx.kind != ProfileKind::Normal {
+        return;
+    }
+    let Some(roots) = &ctx.roots else {
+        return;
+    };
+    let Some(name) = profile::validate_profile_name(raw)
+        .ok()
+        .and_then(|n| roots.find_existing(&n))
+    else {
+        profile::set_flash(format!("There is no profile named \"{}\".", raw.trim()));
+        return;
+    };
+    if name.eq_ignore_ascii_case(&ctx.name) {
+        return;
+    }
+    if let Err(err) = profile::spawn_profile_window(&name) {
+        profile::set_flash(format!("Could not open \"{name}\": {err}"));
+    }
+}
+
+/// Opens a private window, at most once per [`PRIVATE_WINDOW_MIN_INTERVAL`].
+fn open_private_window(ctx: &ProfileContext, last_spawn: &mut Option<Instant>) {
+    if ctx.kind == ProfileKind::SelfTest {
+        return;
+    }
+    let now = Instant::now();
+    if last_spawn.is_some_and(|t| now.saturating_duration_since(t) < PRIVATE_WINDOW_MIN_INTERVAL) {
+        return;
+    }
+    *last_spawn = Some(now);
+    if let Err(err) = profile::spawn_private_window(&ctx.name) {
+        eprintln!("[ember] failed to open a private window: {err}");
+    }
+}
+
+/// Sends `event` after `delay` from a helper thread (timeouts for async WebView2 operations).
+fn send_event_after(proxy: &EventLoopProxy<AppEvent>, delay: Duration, event: AppEvent) {
+    let proxy = proxy.clone();
+    let _ = thread::Builder::new()
+        .name(String::from("ember-timeout"))
+        .spawn(move || {
+            thread::sleep(delay);
+            let _ = proxy.send_event(event);
+        });
 }
 
 fn load_target_into_webview(webview: &WebView, url: &str, ctx: &PageCtx<'_>) {
@@ -684,24 +839,33 @@ fn sync_chrome_ui(
     let _ = chrome_webview.zoom(1.0);
     let script = ui::build_state_sync_script(&sync_state);
     let _ = chrome_webview.evaluate_script(&script);
+    session::notify_tabs_changed();
 
+    let base_title = profile::window_title_base();
     if let Some(active) = tabs.active_tab() {
         let title = if active.title.trim().is_empty() {
-            String::from("Ember")
+            base_title
         } else {
-            format!("{} - Ember", active.title)
+            format!("{} - {base_title}", active.title)
         };
         window.set_title(&title);
     } else {
-        window.set_title("Ember");
+        window.set_title(&base_title);
     }
 }
 
 /// Runs the Ember browser application event loop.
 pub fn run() -> Result<(), Box<dyn Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    let launch = profile::parse_launch_args(args.iter().skip(1))?;
+    if let Some(dir) = &launch.cleanup_dir {
+        // Helper process started by a closing private window: delete its data and exit.
+        profile::run_cleanup_helper(dir);
+        return Ok(());
+    }
+
     let _webview_version = ui::ensure_webview_runtime()?;
 
-    let args: Vec<String> = std::env::args().collect();
     let selftest_mode = args.iter().any(|a| a == "--selftest");
     #[cfg(debug_assertions)]
     let open_ui_devtools_on_start = args.iter().any(|a| a == "--ui-devtools")
@@ -710,22 +874,24 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
     let _ = Storage::ensure_default_logs_dir();
 
-    let selftest_temp_dir = if selftest_mode {
-        let dir = std::env::temp_dir().join(format!("ember_selftest_{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        Some(dir)
-    } else {
-        None
+    // Each profile (and each private window / self-test) runs in its own process. The lock is
+    // held until the process exits so two processes never share one profile's files.
+    let Some((profile_ctx, _instance_lock)) = resolve_profile(&launch, selftest_mode)? else {
+        ui::show_fatal_error(
+            "Ember",
+            "This profile is already open in another Ember window.",
+        );
+        return Ok(());
     };
+    let selftest_temp_dir =
+        (profile_ctx.kind == ProfileKind::SelfTest).then(|| profile_ctx.data_dir.clone());
 
-    let storage = match &selftest_temp_dir {
-        Some(dir) => Storage::with_base_dir(dir.clone())?,
-        None => Storage::init()?,
-    };
-    let settings = match &selftest_temp_dir {
-        Some(dir) => SettingsStore::with_config_dir(dir.clone())?,
-        None => SettingsStore::init()?,
-    };
+    let storage = Storage::with_base_dir(profile_ctx.data_dir.clone())?;
+    let settings = SettingsStore::with_config_dir(profile_ctx.config_dir.clone())?;
+    if profile_ctx.is_private() {
+        storage.set_history_paused(true);
+    }
+    profile::set_current(profile_ctx.clone());
     if let Some(config_dir) = settings.config_path().parent() {
         crate::theme::init(config_dir);
     }
@@ -751,7 +917,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let proxy = event_loop.create_proxy();
 
     let builder = WindowBuilder::new()
-        .with_title(&ui_config.title)
+        .with_title(profile::window_title_base())
         .with_inner_size(LogicalSize::new(ui_config.width, ui_config.height))
         .with_min_inner_size(LogicalSize::new(480.0, 320.0));
     let window = ui::configure_window_builder(builder).build(&event_loop)?;
@@ -769,6 +935,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .with_transparent(true)
         .with_hotkeys_zoom(false)
         .with_devtools(cfg!(debug_assertions))
+        .with_initialization_script(&profile_ctx.chrome_init_script())
         .with_html(crate::theme::inject_style(
             ui::CHROME_HTML,
             &crate::theme::current().chrome_css(),
@@ -784,6 +951,27 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     #[cfg(debug_assertions)]
     if open_ui_devtools_on_start {
         chrome_webview.open_devtools();
+    }
+
+    // "Clear cookies and site data when Ember closes": the data is cleared at exit (see
+    // `exit_requested` below). If that did not finish last time (crash, kill, timeout), the
+    // marker file is still present and the data is cleared now, before the first tab loads.
+    let mut startup_clear_waiting = false;
+    if profile_ctx.kind == ProfileKind::Normal && init_settings.clear_site_data_on_exit {
+        if profile::site_data_clear_pending(&profile_ctx.data_dir) {
+            let done_proxy = proxy.clone();
+            startup_clear_waiting = privacy::clear_browsing_data_then(
+                &chrome_webview,
+                ClearKinds::site_data(),
+                Box::new(move |_| {
+                    let _ = done_proxy.send_event(AppEvent::StartupClearDone);
+                }),
+            );
+            if startup_clear_waiting {
+                send_event_after(&proxy, SITE_DATA_CLEAR_TIMEOUT, AppEvent::StartupClearDone);
+            }
+        }
+        profile::set_site_data_clear_pending(&profile_ctx.data_dir, true);
     }
 
     let mut selftest_active = selftest_mode;
@@ -844,18 +1032,40 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .filter(|arg| !arg.starts_with('-'))
         .collect();
 
+    // Sessions are saved for persistent profiles only (never private windows, self-tests or
+    // benchmarks) and restored lazily: tabs get `webview: None` until they are selected.
+    let session_enabled = profile_ctx.persists_session() && bench_runner.is_none();
+    let mut restored_session = false;
+    if session_enabled && init_settings.startup_mode == StartupMode::Continue {
+        if let Some(saved) = session::load(&profile_ctx.config_dir) {
+            for (idx, tab) in saved.tabs.iter().enumerate() {
+                let id = tabs.create_tab(&tab.url, idx == saved.active);
+                if !tab.title.is_empty() {
+                    tabs.update_title(id, tab.title.clone());
+                }
+            }
+            restored_session = !saved.tabs.is_empty();
+        }
+    }
+
     let initial_url = if let Some(runner) = &mut bench_runner {
         let (_, url, adblock_on) = runner.steps[0];
         adblocker.set_enabled(adblock_on);
         runner.step_started_at = Instant::now();
-        url.to_string()
+        Some(url.to_string())
     } else if let Some(first) = cli_urls.first() {
-        first.clone()
+        Some(first.clone())
+    } else if restored_session {
+        None
+    } else if init_settings.startup_mode == StartupMode::NewTab {
+        Some(String::from(pages::NEWTAB_URL))
     } else {
-        init_settings.homepage.clone()
+        Some(init_settings.homepage.clone())
     };
 
-    open_input_in_new_tab(&mut tabs, &initial_url, init_settings.search_engine, true);
+    if let Some(initial_url) = &initial_url {
+        open_input_in_new_tab(&mut tabs, initial_url, init_settings.search_engine, true);
+    }
 
     if bench_runner.is_none() && cli_urls.len() > 1 {
         for url in &cli_urls[1..] {
@@ -894,7 +1104,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             proxy: &proxy,
             content_bounds: current_content_bounds,
         };
-        ensure_active_tab_webview(&mut tabs, &mut env)?;
+        if !startup_clear_waiting {
+            ensure_active_tab_webview(&mut tabs, &mut env)?;
+        }
     }
 
     sync_chrome_ui(
@@ -909,6 +1121,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     );
 
     let mut overlay_controller = crate::popup::OverlayController::new();
+    let mut session_saver = SessionSaver::default();
+    let mut exit_requested = false;
+    let mut shutdown_started = false;
+    let mut last_private_spawn: Option<Instant> = None;
 
     let check_interval = tabs
         .suspend_timeout()
@@ -925,6 +1141,40 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             wait_slice = wait_slice.min(Duration::from_millis(50));
         }
         *control_flow = ControlFlow::WaitUntil(Instant::now() + wait_slice);
+
+        if session_enabled && session_saver.poll(Instant::now()) && !tabs.summaries().is_empty() {
+            session_saver.save(&profile_ctx.config_dir, &snapshot_session(&tabs));
+        }
+
+        if exit_requested && !shutdown_started {
+            shutdown_started = true;
+            if session_enabled && !tabs.summaries().is_empty() {
+                session_saver.save(&profile_ctx.config_dir, &snapshot_session(&tabs));
+            }
+            let mut waiting_for_clear = false;
+            if profile_ctx.kind == ProfileKind::Normal && settings.get().clear_site_data_on_exit {
+                window.set_visible(false);
+                let done_proxy = proxy.clone();
+                waiting_for_clear = privacy::clear_browsing_data_then(
+                    &chrome_webview,
+                    ClearKinds::site_data(),
+                    Box::new(move |cleared| {
+                        let _ = done_proxy.send_event(AppEvent::ShutdownReady { cleared });
+                    }),
+                );
+                if waiting_for_clear {
+                    send_event_after(
+                        &proxy,
+                        SITE_DATA_CLEAR_TIMEOUT,
+                        AppEvent::ShutdownReady { cleared: false },
+                    );
+                }
+            }
+            if !waiting_for_clear {
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
+        }
 
         if overlay_controller.is_expanded()
             && overlay_controller.check_watchdog(Instant::now(), &chrome_webview, &window)
@@ -1017,7 +1267,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 event: WindowEvent::CloseRequested,
                 ..
             } if window_id == window.id() => {
-                *control_flow = ControlFlow::Exit;
+                exit_requested = true;
             }
             Event::WindowEvent {
                 window_id,
@@ -1282,8 +1532,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             UiCommand::NewWindow => {
-                                // A second process would share settings.toml and the SQLite
-                                // profile (last writer wins), so open a new tab instead.
+                                // Each profile runs in exactly one process (per-profile lock), so a
+                                // second window of the same profile opens as a new tab instead.
+                                // Other profiles and private windows get their own process.
                                 eprintln!(
                                     "[ember] multiple windows are not supported yet; opening a new tab instead"
                                 );
@@ -1312,6 +1563,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &mut find_state,
                                     &downloads,
                                 );
+                            }
+                            UiCommand::NewPrivateWindow => {
+                                collapse_overlay_from_host(&mut overlay_controller, "new_private_window", &chrome_webview, &window);
+                                open_private_window(&profile_ctx, &mut last_private_spawn);
+                            }
+                            UiCommand::OpenProfile(name) => {
+                                collapse_overlay_from_host(&mut overlay_controller, "open_profile", &chrome_webview, &window);
+                                open_profile_window(&profile_ctx, &name);
                             }
                             UiCommand::OpenNewTab(target_url) => {
                                 collapse_overlay_from_host(&mut overlay_controller, "open_new_tab", &chrome_webview, &window);
@@ -1619,7 +1878,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 );
                                 let outcome = tabs.close_tab(tab_id);
                                 if outcome == CloseTabOutcome::LastTabClosed {
-                                    *control_flow = ControlFlow::Exit;
+                                    exit_requested = true;
                                 } else if outcome == CloseTabOutcome::Closed {
                                     let mut env = WebViewEnv {
                                         window: &window,
@@ -2056,7 +2315,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 );
                             }
                             UiCommand::WindowClose => {
-                                *control_flow = ControlFlow::Exit;
+                                exit_requested = true;
                             }
                             UiCommand::WindowSnap(zone) => {
                                 ui::snap_window_to_zone(&window, zone);
@@ -2319,6 +2578,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &downloads,
                                 );
                             }
+                            PageIpcEvent::ShortcutNewPrivateWindow => {
+                                open_private_window(&profile_ctx, &mut last_private_spawn);
+                            }
                             PageIpcEvent::ShortcutNewTab => {
                                 let s = settings.get();
                                 open_input_in_new_tab(&mut tabs, &s.homepage, s.search_engine, true);
@@ -2348,7 +2610,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             PageIpcEvent::ShortcutCloseTab => {
                                 let outcome = tabs.close_tab(tab_id);
                                 if outcome == CloseTabOutcome::LastTabClosed {
-                                    *control_flow = ControlFlow::Exit;
+                                    exit_requested = true;
                                 } else if outcome == CloseTabOutcome::Closed {
                                     let mut env = WebViewEnv {
                                         window: &window,
@@ -2614,6 +2876,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 let mut theme_to_apply = None;
                                 let mut suspend_changed = false;
                                 let mut reload_needed = false;
+                                let mut autofill_changed = false;
+                                let mut clear_on_exit_changed = None;
 
                                 let updated = settings.update(|s| match key.as_str() {
                                     "search_engine" => {
@@ -2678,8 +2942,35 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     "tab_animations_enabled" => {
                                         s.tab_animations_enabled = value == "true";
                                     }
+                                    "startup_mode" => {
+                                        s.startup_mode = StartupMode::parse(&value);
+                                    }
+                                    "offer_save_passwords" => {
+                                        s.offer_save_passwords = value == "true";
+                                        autofill_changed = true;
+                                    }
+                                    "autofill_enabled" => {
+                                        s.autofill_enabled = value == "true";
+                                        autofill_changed = true;
+                                    }
+                                    "clear_site_data_on_exit" => {
+                                        s.clear_site_data_on_exit = value == "true";
+                                        clear_on_exit_changed = Some(s.clear_site_data_on_exit);
+                                    }
                                     _ => {}
                                 });
+
+                                if autofill_changed {
+                                    tabs.for_each_webview(|wv| apply_autofill_to_webview(wv, &updated));
+                                }
+                                if let Some(enabled) = clear_on_exit_changed {
+                                    if profile_ctx.kind == ProfileKind::Normal {
+                                        profile::set_site_data_clear_pending(
+                                            &profile_ctx.data_dir,
+                                            enabled,
+                                        );
+                                    }
+                                }
 
                                 if let Some(theme) = theme_to_apply {
                                     ui::apply_theme_preference(&window, theme);
@@ -2750,28 +3041,21 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                         }
                                     }
                                     "clear_data" => {
-                                        let clear_history = arg.contains("history");
-                                        let clear_cookies = arg.contains("cookies");
-                                        let clear_cache = arg.contains("cache");
+                                        let clear_history =
+                                            arg.split(',').any(|t| t.trim() == "history");
+                                        let kinds = ClearKinds::from_action_arg(&arg);
                                         if clear_history {
                                             storage.clear_history();
                                         }
-                                        if clear_cookies || clear_cache {
-                                            if let Some(active) = tabs.active_tab() {
-                                                if let Some(wv) = &active.webview {
-                                                    privacy::clear_browsing_data(
-                                                        wv,
-                                                        clear_cookies,
-                                                        clear_cache,
-                                                    );
-                                                }
-                                            } else {
-                                                privacy::clear_browsing_data(
-                                                    &chrome_webview,
-                                                    clear_cookies,
-                                                    clear_cache,
-                                                );
-                                            }
+                                        if !kinds.is_empty() {
+                                            // All webviews share one WebView2 profile per Ember
+                                            // profile, so any live webview can clear it.
+                                            let active_wv =
+                                                tabs.active_tab().and_then(|t| t.webview.as_ref());
+                                            privacy::clear_browsing_data(
+                                                active_wv.unwrap_or(&chrome_webview),
+                                                kinds,
+                                            );
                                         }
                                         if tabs
                                             .get_tab(tab_id)
@@ -2828,6 +3112,42 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                             &mut find_state,
                                             &safe_target,
                                         );
+                                    }
+                                    "profile_create" | "profile_delete" => {
+                                        if let (ProfileKind::Normal, Some(roots)) =
+                                            (profile_ctx.kind, &profile_ctx.roots)
+                                        {
+                                            let result = if name == "profile_create" {
+                                                roots.create(&arg).map(|n| {
+                                                    format!("Created profile \"{n}\". Use Open to start it in its own window.")
+                                                })
+                                            } else {
+                                                roots
+                                                    .delete(&arg, &profile_ctx.name)
+                                                    .map(|n| format!("Deleted profile \"{n}\"."))
+                                            };
+                                            profile::set_flash(result.unwrap_or_else(|e| e));
+                                            let _ = chrome_webview
+                                                .evaluate_script(&profile_ctx.chrome_refresh_script());
+                                        }
+                                        if tabs
+                                            .get_tab(tab_id)
+                                            .is_some_and(|t| t.url == pages::SETTINGS_URL)
+                                        {
+                                            reload_tab(&mut tabs, tab_id, &storage, &settings, &adblocker);
+                                        }
+                                    }
+                                    "profile_open" => {
+                                        open_profile_window(&profile_ctx, &arg);
+                                        if tabs
+                                            .get_tab(tab_id)
+                                            .is_some_and(|t| t.url == pages::SETTINGS_URL)
+                                        {
+                                            reload_tab(&mut tabs, tab_id, &storage, &settings, &adblocker);
+                                        }
+                                    }
+                                    "new_private_window" => {
+                                        open_private_window(&profile_ctx, &mut last_private_spawn);
                                     }
                                     "run_selftest" => {
                                         selftest_active = true;
@@ -3157,6 +3477,39 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         }
                     }
                 }
+                AppEvent::StartupClearDone => {
+                    if startup_clear_waiting {
+                        startup_clear_waiting = false;
+                        let mut env = WebViewEnv {
+                            window: &window,
+                            web_context: &mut web_context,
+                            storage: &storage,
+                            adblocker: &adblocker,
+                            permissions: &permissions,
+                            settings: &settings,
+                            downloads: &downloads,
+                            proxy: &proxy,
+                            content_bounds: current_content_bounds,
+                        };
+                        let _ = ensure_active_tab_webview(&mut tabs, &mut env);
+                        sync_chrome_ui(
+                            &chrome_webview,
+                            &window,
+                            &tabs,
+                            &storage,
+                            &adblocker,
+                            &settings,
+                            &mut find_state,
+                            &downloads,
+                        );
+                    }
+                }
+                AppEvent::ShutdownReady { cleared } => {
+                    if cleared {
+                        profile::set_site_data_clear_pending(&profile_ctx.data_dir, false);
+                    }
+                    *control_flow = ControlFlow::Exit;
+                }
                 AppEvent::SelfTestTimeout => {
                     if selftest_mode && selftest_active {
                         eprintln!("FAIL: self-test timed out after 25s");
@@ -3168,6 +3521,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                     }
                 }
             },
+            // The WebView2 browser processes still hold files in the temporary profile until
+            // shortly after this process exits; a detached helper deletes it then.
+            Event::LoopDestroyed if profile_ctx.is_private() => {
+                if let Err(err) = profile::spawn_cleanup_helper(&profile_ctx.data_dir) {
+                    eprintln!("[ember] failed to start private data cleanup: {err}");
+                }
+            }
             _ => {}
         }
     });

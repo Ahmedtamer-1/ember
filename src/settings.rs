@@ -84,6 +84,35 @@ impl ThemePreference {
     }
 }
 
+/// What Ember opens at startup (`ember://settings` → "On startup").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupMode {
+    /// Restore the tabs that were open when Ember last closed.
+    Continue,
+    /// Open a single new tab page.
+    NewTab,
+    /// Open the configured homepage.
+    Homepage,
+}
+
+impl StartupMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Continue => "continue",
+            Self::NewTab => "newtab",
+            Self::Homepage => "homepage",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "newtab" => Self::NewTab,
+            "homepage" => Self::Homepage,
+            _ => Self::Continue,
+        }
+    }
+}
+
 /// Complete browser settings persisted in `settings.toml` inside the OS config directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserSettings {
@@ -99,6 +128,14 @@ pub struct BrowserSettings {
     pub https_only_mode: bool,
     pub tab_animations_enabled: bool,
     pub search_suggestions_enabled: bool,
+    /// What to open at startup (restore the previous session by default).
+    pub startup_mode: StartupMode,
+    /// Let WebView2's built-in (OS-encrypted) password manager offer to save passwords.
+    pub offer_save_passwords: bool,
+    /// Let WebView2 autofill addresses and other form fields.
+    pub autofill_enabled: bool,
+    /// Clear cookies and site data (not passwords/autofill) when Ember closes.
+    pub clear_site_data_on_exit: bool,
 }
 
 impl Default for BrowserSettings {
@@ -121,6 +158,10 @@ impl Default for BrowserSettings {
             https_only_mode: false,
             tab_animations_enabled: true,
             search_suggestions_enabled: false,
+            startup_mode: StartupMode::Continue,
+            offer_save_passwords: true,
+            autofill_enabled: true,
+            clear_site_data_on_exit: false,
         }
     }
 }
@@ -147,6 +188,7 @@ impl BrowserSettings {
              theme = \"{}\"\n\
              tab_suspend_minutes = {}\n\
              tab_animations_enabled = {}\n\
+             on_startup = \"{}\"\n\
              \n\
              [adblock]\n\
              enabled = {}\n\
@@ -157,12 +199,16 @@ impl BrowserSettings {
              block_third_party_cookies = {}\n\
              send_dnt_and_gpc = {}\n\
              https_only_mode = {}\n\
-             search_suggestions_enabled = {}\n",
+             search_suggestions_enabled = {}\n\
+             offer_save_passwords = {}\n\
+             autofill_enabled = {}\n\
+             clear_site_data_on_exit = {}\n",
             self.search_engine.as_str(),
             escape_toml_string(&self.homepage),
             self.theme.as_str(),
             self.tab_suspend_minutes,
             self.tab_animations_enabled,
+            self.startup_mode.as_str(),
             self.adblock_enabled,
             self.easylist_enabled,
             self.easyprivacy_enabled,
@@ -170,6 +216,9 @@ impl BrowserSettings {
             self.send_dnt_and_gpc,
             self.https_only_mode,
             self.search_suggestions_enabled,
+            self.offer_save_passwords,
+            self.autofill_enabled,
+            self.clear_site_data_on_exit,
         )
     }
 
@@ -221,6 +270,11 @@ impl BrowserSettings {
                         settings.tab_animations_enabled = b;
                     }
                 }
+                ("general" | "", "on_startup") => {
+                    if let Some(s) = parse_toml_string(val) {
+                        settings.startup_mode = StartupMode::parse(&s);
+                    }
+                }
                 ("adblock" | "", "enabled" | "adblock_enabled") => {
                     if let Some(b) = parse_toml_bool(val) {
                         settings.adblock_enabled = b;
@@ -256,6 +310,21 @@ impl BrowserSettings {
                         settings.search_suggestions_enabled = b;
                     }
                 }
+                ("privacy" | "", "offer_save_passwords") => {
+                    if let Some(b) = parse_toml_bool(val) {
+                        settings.offer_save_passwords = b;
+                    }
+                }
+                ("privacy" | "", "autofill_enabled") => {
+                    if let Some(b) = parse_toml_bool(val) {
+                        settings.autofill_enabled = b;
+                    }
+                }
+                ("privacy" | "", "clear_site_data_on_exit") => {
+                    if let Some(b) = parse_toml_bool(val) {
+                        settings.clear_site_data_on_exit = b;
+                    }
+                }
                 _ => {}
             }
         }
@@ -277,6 +346,11 @@ impl SettingsStore {
     pub fn init() -> io::Result<Self> {
         let config_dir = platform::resolve_config_dir()?;
         Self::with_config_dir(config_dir)
+    }
+
+    /// Returns the Default profile's config directory (`%APPDATA%\Ember` on Windows).
+    pub fn default_config_dir() -> io::Result<PathBuf> {
+        platform::resolve_config_dir()
     }
 
     /// Initializes the settings store inside a specific config directory.
@@ -703,6 +777,40 @@ mod tests {
             BrowserSettings::from_toml_str("homepage = 'https://x.com/#a' # comment").homepage,
             "https://x.com/#a"
         );
+    }
+
+    #[test]
+    fn test_profile_password_session_fields_roundtrip() {
+        let defaults = BrowserSettings::default();
+        assert_eq!(defaults.startup_mode, StartupMode::Continue);
+        assert!(defaults.offer_save_passwords);
+        assert!(defaults.autofill_enabled);
+        assert!(!defaults.clear_site_data_on_exit);
+
+        // Settings files written before these keys existed keep the defaults.
+        let old = BrowserSettings::from_toml_str("[general]\nhomepage = \"https://a.test\"\n");
+        assert_eq!(old.startup_mode, StartupMode::Continue);
+        assert!(old.offer_save_passwords && old.autofill_enabled);
+        assert!(!old.clear_site_data_on_exit);
+
+        for mode in [
+            StartupMode::Continue,
+            StartupMode::NewTab,
+            StartupMode::Homepage,
+        ] {
+            let settings = BrowserSettings {
+                startup_mode: mode,
+                offer_save_passwords: false,
+                autofill_enabled: false,
+                clear_site_data_on_exit: true,
+                ..BrowserSettings::default()
+            };
+            let parsed = BrowserSettings::from_toml_str(&settings.to_toml_string());
+            assert_eq!(parsed, settings);
+        }
+        assert_eq!(StartupMode::parse("bogus"), StartupMode::Continue);
+        assert_eq!(StartupMode::parse(" HomePage "), StartupMode::Homepage);
+        assert_eq!(StartupMode::parse("newtab"), StartupMode::NewTab);
     }
 
     #[test]

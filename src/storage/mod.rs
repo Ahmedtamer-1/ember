@@ -3,7 +3,7 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex, RwLock,
     },
     thread,
@@ -409,6 +409,8 @@ pub struct Storage {
     worker_tx: mpsc::Sender<DbJob>,
     latest_query_id: Arc<AtomicU64>,
     omnibox_cache: Arc<RwLock<OmniboxCache>>,
+    /// When `true` (private windows), visits are never written to history.
+    history_paused: Arc<AtomicBool>,
 }
 
 impl Storage {
@@ -416,6 +418,20 @@ impl Storage {
     pub fn init() -> io::Result<Self> {
         let base_dir = platform::resolve_app_data_dir()?;
         Self::with_base_dir(base_dir)
+    }
+
+    /// Returns the Default profile's data directory (`%LOCALAPPDATA%\Ember` on Windows).
+    pub fn default_data_dir() -> io::Result<PathBuf> {
+        platform::resolve_app_data_dir()
+    }
+
+    /// Stops (or resumes) recording visits in history. Used by private windows.
+    pub fn set_history_paused(&self, paused: bool) {
+        self.history_paused.store(paused, Ordering::Relaxed);
+    }
+
+    fn history_paused(&self) -> bool {
+        self.history_paused.load(Ordering::Relaxed)
     }
 
     /// Ensures the default per-user `logs` directory exists and returns its path.
@@ -592,6 +608,7 @@ impl Storage {
             worker_tx,
             latest_query_id,
             omnibox_cache,
+            history_paused: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -685,7 +702,7 @@ impl Storage {
     /// Internal `ember://`, `about:`, and `data:` URLs are skipped.
     pub fn record_visit(&self, url: &str, title: &str) {
         let trimmed = url.trim();
-        if !should_track_url(trimmed) {
+        if self.history_paused() || !should_track_url(trimmed) {
             return;
         }
         let clean_title = sanitize_history_title(trimmed, title);
@@ -703,7 +720,7 @@ impl Storage {
     /// Enqueues a non-blocking history write onto the background DB worker thread.
     pub fn record_visit_async(&self, url: &str, title: &str) {
         let trimmed = url.trim();
-        if !should_track_url(trimmed) {
+        if self.history_paused() || !should_track_url(trimmed) {
             return;
         }
         let clean_title = sanitize_history_title(trimmed, title);
@@ -721,7 +738,7 @@ impl Storage {
     /// Marks `url` as having been explicitly typed/selected in the omnibox so it scores higher for autofill.
     pub fn mark_url_typed_async(&self, url: &str) {
         let trimmed = url.trim();
-        if !should_track_url(trimmed) {
+        if self.history_paused() || !should_track_url(trimmed) {
             return;
         }
         let now = unix_timestamp_secs() as i64;
@@ -738,7 +755,7 @@ impl Storage {
     pub fn update_visit_title(&self, url: &str, title: &str) {
         let trimmed_url = url.trim();
         let trimmed_title = title.trim();
-        if !should_track_url(trimmed_url) || trimmed_title.is_empty() {
+        if self.history_paused() || !should_track_url(trimmed_url) || trimmed_title.is_empty() {
             return;
         }
         if let Ok(guard) = self.db.lock() {
@@ -755,7 +772,7 @@ impl Storage {
     pub fn update_visit_title_async(&self, url: &str, title: &str) {
         let trimmed_url = url.trim();
         let trimmed_title = title.trim();
-        if !should_track_url(trimmed_url) || trimmed_title.is_empty() {
+        if self.history_paused() || !should_track_url(trimmed_url) || trimmed_title.is_empty() {
             return;
         }
         if let Ok(mut cache) = self.omnibox_cache.write() {
