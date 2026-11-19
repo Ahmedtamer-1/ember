@@ -103,41 +103,132 @@ pub fn is_third_party(request_url: &str, source_url: &str) -> bool {
     registrable_domain(&req_host) != registrable_domain(&src_host)
 }
 
-/// Clears cookies and/or the HTTP cache of the shared WebView2 profile.
+/// Kinds of browsing data that can be cleared through the WebView2 profile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClearKinds {
+    /// Cookies only (the "Cookies and site data" checkbox).
+    pub cookies: bool,
+    /// HTTP disk cache and Cache Storage.
+    pub cache: bool,
+    /// Passwords saved by WebView2's built-in password manager.
+    pub passwords: bool,
+    /// General autofill data (addresses, form entries).
+    pub autofill: bool,
+    /// All site data: cookies, DOM storage, IndexedDB, service workers, cache storage, ...
+    pub all_site_data: bool,
+}
+
+impl ClearKinds {
+    /// Parses the comma-separated `clear_data` action argument from `ember://settings`
+    /// (`history,cookies,cache,passwords,autofill`). Unknown tokens are ignored.
+    pub fn from_action_arg(arg: &str) -> Self {
+        let mut kinds = Self::default();
+        for token in arg.split(',').map(str::trim) {
+            match token {
+                "cookies" => kinds.cookies = true,
+                "cache" => kinds.cache = true,
+                "passwords" => kinds.passwords = true,
+                "autofill" => kinds.autofill = true,
+                _ => {}
+            }
+        }
+        kinds
+    }
+
+    /// Cookies and all other site data, used by "Clear cookies and site data when Ember closes".
+    /// Saved passwords and autofill data are kept.
+    pub const fn site_data() -> Self {
+        Self {
+            cookies: true,
+            cache: false,
+            passwords: false,
+            autofill: false,
+            all_site_data: true,
+        }
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        !(self.cookies || self.cache || self.passwords || self.autofill || self.all_site_data)
+    }
+}
+
+/// Clears the selected kinds of browsing data of the WebView2 profile that `webview` uses.
 /// Returns `true` if the request was submitted.
-pub fn clear_browsing_data(webview: &WebView, cookies: bool, cache: bool) -> bool {
-    platform::clear_browsing_data(webview, cookies, cache)
+pub fn clear_browsing_data(webview: &WebView, kinds: ClearKinds) -> bool {
+    platform::clear_browsing_data(webview, kinds, Box::new(|_| {}))
+}
+
+/// Like [`clear_browsing_data`], calling `on_done(success)` on the UI thread once WebView2 has
+/// finished. `on_done` is never called when this returns `false`.
+pub fn clear_browsing_data_then(
+    webview: &WebView,
+    kinds: ClearKinds,
+    on_done: Box<dyn FnOnce(bool)>,
+) -> bool {
+    platform::clear_browsing_data(webview, kinds, on_done)
+}
+
+/// Turns WebView2's built-in password manager ("offer to save passwords"; the runtime stores
+/// them encrypted in the profile's user data folder) and general form autofill on or off for
+/// one webview. Returns `true` if both settings were applied.
+pub fn apply_autofill_settings(webview: &WebView, save_passwords: bool, autofill: bool) -> bool {
+    platform::apply_autofill_settings(webview, save_passwords, autofill)
 }
 
 #[cfg(target_os = "windows")]
 mod platform {
+    use super::ClearKinds;
     use webview2_com::{
         ClearBrowsingDataCompletedHandler,
         Microsoft::Web::WebView2::Win32::{
-            ICoreWebView2Profile2, ICoreWebView2_13, COREWEBVIEW2_BROWSING_DATA_KINDS,
+            ICoreWebView2, ICoreWebView2Profile2, ICoreWebView2Settings4, ICoreWebView2_13,
+            COREWEBVIEW2_BROWSING_DATA_KINDS, COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_SITE,
             COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE,
             COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES, COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
+            COREWEBVIEW2_BROWSING_DATA_KINDS_GENERAL_AUTOFILL,
+            COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE,
         },
     };
     use windows_core::Interface;
     use wry::{WebView, WebViewExtWindows};
 
-    pub fn clear_browsing_data(webview: &WebView, cookies: bool, cache: bool) -> bool {
+    fn core_webview(webview: &WebView) -> Option<ICoreWebView2> {
+        let controller = webview.controller();
+        // SAFETY: `controller` is a live COM pointer owned by `webview` on the main UI thread.
+        unsafe { controller.CoreWebView2() }.ok()
+    }
+
+    pub fn kinds_to_bits(kinds: ClearKinds) -> i32 {
         let mut bits = 0;
-        if cookies {
+        if kinds.cookies {
             bits |= COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES.0;
         }
-        if cache {
+        if kinds.cache {
             bits |= COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE.0
                 | COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE.0;
         }
+        if kinds.passwords {
+            bits |= COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE.0;
+        }
+        if kinds.autofill {
+            bits |= COREWEBVIEW2_BROWSING_DATA_KINDS_GENERAL_AUTOFILL.0;
+        }
+        if kinds.all_site_data {
+            bits |= COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_SITE.0;
+        }
+        bits
+    }
+
+    pub fn clear_browsing_data(
+        webview: &WebView,
+        kinds: ClearKinds,
+        on_done: Box<dyn FnOnce(bool)>,
+    ) -> bool {
+        let bits = kinds_to_bits(kinds);
         if bits == 0 {
             return false;
         }
-
-        let controller = webview.controller();
-        // SAFETY: `controller` is a live COM pointer owned by `webview` on the main UI thread.
-        let Ok(core) = (unsafe { controller.CoreWebView2() }) else {
+        let Some(core) = core_webview(webview) else {
             return false;
         };
         let Ok(core13) = core.cast::<ICoreWebView2_13>() else {
@@ -151,7 +242,10 @@ mod platform {
             return false;
         };
 
-        let handler = ClearBrowsingDataCompletedHandler::create(Box::new(|_| Ok(())));
+        let handler = ClearBrowsingDataCompletedHandler::create(Box::new(move |result| {
+            on_done(result.is_ok());
+            Ok(())
+        }));
         // SAFETY: Asynchronous request; the handler keeps itself alive until completion.
         unsafe {
             profile2
@@ -159,20 +253,89 @@ mod platform {
                 .is_ok()
         }
     }
+
+    pub fn apply_autofill_settings(
+        webview: &WebView,
+        save_passwords: bool,
+        autofill: bool,
+    ) -> bool {
+        let Some(core) = core_webview(webview) else {
+            return false;
+        };
+        // SAFETY: Plain COM property getter on a valid interface.
+        let Ok(settings) = (unsafe { core.Settings() }) else {
+            return false;
+        };
+        let Ok(settings4) = settings.cast::<ICoreWebView2Settings4>() else {
+            return false;
+        };
+        // SAFETY: Plain COM property setters on a valid interface, on the UI thread.
+        unsafe {
+            let passwords_ok = settings4
+                .SetIsPasswordAutosaveEnabled(save_passwords)
+                .is_ok();
+            let autofill_ok = settings4.SetIsGeneralAutofillEnabled(autofill).is_ok();
+            passwords_ok && autofill_ok
+        }
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
 mod platform {
+    use super::ClearKinds;
     use wry::WebView;
 
-    pub fn clear_browsing_data(webview: &WebView, _cookies: bool, _cache: bool) -> bool {
-        webview.clear_all_browsing_data().is_ok()
+    pub fn clear_browsing_data(
+        webview: &WebView,
+        kinds: ClearKinds,
+        on_done: Box<dyn FnOnce(bool)>,
+    ) -> bool {
+        if kinds.is_empty() {
+            return false;
+        }
+        let ok = webview.clear_all_browsing_data().is_ok();
+        if ok {
+            on_done(true);
+        }
+        ok
+    }
+
+    pub fn apply_autofill_settings(_webview: &WebView, _passwords: bool, _autofill: bool) -> bool {
+        false
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_clear_kinds_from_action_arg() {
+        let all = ClearKinds::from_action_arg("history,cookies,cache,passwords,autofill");
+        assert!(all.cookies && all.cache && all.passwords && all.autofill);
+        assert!(!all.all_site_data);
+        assert!(ClearKinds::from_action_arg("history").is_empty());
+        // Tokens must match exactly ("passwordsx" is not "passwords").
+        assert!(ClearKinds::from_action_arg("passwordsx, autofil").is_empty());
+        let pw = ClearKinds::from_action_arg(" passwords ");
+        assert!(pw.passwords && !pw.cookies);
+        let site = ClearKinds::site_data();
+        assert!(site.cookies && site.all_site_data && !site.passwords && !site.autofill);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_clear_kinds_bits() {
+        assert_eq!(platform::kinds_to_bits(ClearKinds::default()), 0);
+        let pw = ClearKinds {
+            passwords: true,
+            autofill: true,
+            ..ClearKinds::default()
+        };
+        assert_eq!(platform::kinds_to_bits(pw), 2048 | 1024);
+        // ALL_SITE (128) | COOKIES (64); passwords and autofill data are kept.
+        assert_eq!(platform::kinds_to_bits(ClearKinds::site_data()), 128 | 64);
+    }
 
     #[test]
     fn test_registrable_domain() {

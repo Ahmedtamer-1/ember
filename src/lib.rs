@@ -11,6 +11,8 @@ pub mod pages;
 pub mod permissions;
 pub mod popup;
 pub mod privacy;
+pub mod profile;
+pub mod session;
 pub mod settings;
 pub mod storage;
 pub mod tabs;

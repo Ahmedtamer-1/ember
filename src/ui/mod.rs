@@ -115,6 +115,9 @@ pub const PAGE_INIT_SCRIPT: &str = r#"
     if (e.key === "Tab") {
       e.preventDefault();
       post(e.shiftKey ? "shortcut:prev_tab" : "shortcut:next_tab");
+    } else if (e.shiftKey && key === "n") {
+      e.preventDefault();
+      post("shortcut:new_private_window");
     } else if (e.shiftKey && key === "t") {
       e.preventDefault();
       post("shortcut:reopen_closed_tab");
@@ -303,6 +306,10 @@ pub enum UiCommand {
     SelfTestReport(String),
     NewTab,
     NewWindow,
+    /// Open a private window (new `--private` process).
+    NewPrivateWindow,
+    /// Open profile `name` in its own window (chrome menu profile entries).
+    OpenProfile(String),
     OpenNewTab(String),
     OpenDownloads,
     Print,
@@ -365,6 +372,7 @@ pub fn parse_ipc_command(raw: &str) -> Option<UiCommand> {
         "open_ui_devtools" => Some(UiCommand::OpenUiDevTools),
         "new_tab" => Some(UiCommand::NewTab),
         "new_window" => Some(UiCommand::NewWindow),
+        "new_private_window" => Some(UiCommand::NewPrivateWindow),
         "open_downloads" => Some(UiCommand::OpenDownloads),
         "print" => Some(UiCommand::Print),
         "close_popup" => Some(UiCommand::OverlayShrink(String::from("close_popup"))),
@@ -444,6 +452,10 @@ pub fn parse_ipc_command(raw: &str) -> Option<UiCommand> {
                 Some(UiCommand::FindNext(q.to_owned()))
             } else if let Some(q) = trimmed.strip_prefix("find_prev:") {
                 Some(UiCommand::FindPrev(q.to_owned()))
+            } else if let Some(name) = trimmed.strip_prefix("open_profile:") {
+                crate::profile::validate_profile_name(name)
+                    .ok()
+                    .map(UiCommand::OpenProfile)
             } else if let Some(url) = trimmed.strip_prefix("open_new_tab:") {
                 Some(UiCommand::OpenNewTab(url.trim().to_owned()))
             } else if let Some(kind) = trimmed.strip_prefix("overlay_expand:") {
@@ -585,6 +597,8 @@ pub enum PageIpcEvent {
     /// `ember://themes`: delete the stored wallpaper video.
     WallpaperClear,
     ShortcutNewTab,
+    /// Ctrl+Shift+N inside a page: open a private window.
+    ShortcutNewPrivateWindow,
     ShortcutCloseTab,
     ShortcutReopenClosedTab,
     ShortcutNextTab,
@@ -704,6 +718,7 @@ pub fn page_event_requires_active_sender(event: &PageIpcEvent) -> bool {
     matches!(
         event,
         PageIpcEvent::ShortcutNewTab
+            | PageIpcEvent::ShortcutNewPrivateWindow
             | PageIpcEvent::ShortcutCloseTab
             | PageIpcEvent::ShortcutReopenClosedTab
             | PageIpcEvent::ShortcutNextTab
@@ -817,6 +832,7 @@ fn parse_page_ipc_body(raw: &str) -> Option<PageIpcEvent> {
     let trimmed = raw.trim();
     match trimmed {
         "shortcut:new_tab" => Some(PageIpcEvent::ShortcutNewTab),
+        "shortcut:new_private_window" => Some(PageIpcEvent::ShortcutNewPrivateWindow),
         "shortcut:close_tab" => Some(PageIpcEvent::ShortcutCloseTab),
         "shortcut:reopen_closed_tab" => Some(PageIpcEvent::ShortcutReopenClosedTab),
         "shortcut:next_tab" => Some(PageIpcEvent::ShortcutNextTab),
@@ -2539,5 +2555,52 @@ accent=#ff0000"
             ),
             None
         );
+    }
+
+    #[test]
+    fn profile_and_private_window_ipc() {
+        // Profile management and the new settings go through privileged settings messages.
+        let tok = internal_ipc_token();
+        for msg in [
+            "settings_action:profile_create:Work",
+            "settings_action:profile_delete:Work",
+            "settings_action:profile_open:Work",
+            "settings_action:new_private_window",
+            "settings_set:offer_save_passwords=false",
+            "settings_set:autofill_enabled=false",
+            "settings_set:clear_site_data_on_exit=true",
+            "settings_set:startup_mode=newtab",
+            "settings_action:clear_data:passwords,autofill",
+        ] {
+            assert_eq!(parse_page_ipc_event(msg), None, "{msg} must be privileged");
+            assert!(parse_page_ipc_event_checked(msg, tok, Some("ember://settings"), "").is_none());
+            let raw = format!("{INTERNAL_IPC_PREFIX}{tok}:{msg}");
+            assert!(
+                parse_page_ipc_event_checked(&raw, tok, Some("ember://settings"), "").is_some()
+            );
+            assert!(parse_page_ipc_event_checked(
+                &raw,
+                tok,
+                Some("https://evil.example/"),
+                "https://evil.example/"
+            )
+            .is_none());
+        }
+        // Ctrl+Shift+N inside a page is an unprivileged shortcut that needs the active tab.
+        let ev = parse_page_ipc_event("shortcut:new_private_window");
+        assert_eq!(ev, Some(PageIpcEvent::ShortcutNewPrivateWindow));
+        assert!(ev.as_ref().is_some_and(page_event_requires_active_sender));
+        assert!(ev.as_ref().is_some_and(|e| !is_privileged_page_event(e)));
+        // Chrome UI commands.
+        assert_eq!(
+            parse_ipc_command("new_private_window"),
+            Some(UiCommand::NewPrivateWindow)
+        );
+        assert_eq!(
+            parse_ipc_command("open_profile:My Work"),
+            Some(UiCommand::OpenProfile(String::from("My Work")))
+        );
+        assert_eq!(parse_ipc_command("open_profile:../evil"), None);
+        assert_eq!(parse_ipc_command("open_profile:"), None);
     }
 }
