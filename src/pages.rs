@@ -463,15 +463,17 @@ fn render_newtab_html(
     push_js_links(&mut data, mv.iter().copied());
     data.push_str(&format!("], max: {} }};", crate::newtab::MAX_SHORTCUTS));
 
-    // TODO(brand): replace the wordmark with `crate::brand::LOGO_SVG` once it exists.
-    let logo = r#"<span class="nt-mark" aria-hidden="true"></span><span>Ember</span>"#;
+    let logo = format!(
+        r#"<span class="nt-mark" aria-hidden="true">{}</span><span class="nt-word">Ember</span>"#,
+        crate::brand::LOGO_SVG
+    );
 
     fill_template_in_order(
         NEWTAB_PAGE_HTML,
         &[
             ("/*__SHARED_CSS__*/", SHARED_INTERNAL_CSS),
             ("__BODY_ATTRS__", &newtab_body_attrs(cfg)),
-            ("<!--__LOGO__-->", logo),
+            ("<!--__LOGO__-->", &logo),
             ("<!--__TILES__-->", &tiles),
             ("<!--__MV__-->", &chips),
             ("<!--__NOTES__-->", &escape_html(cfg.get("notes"))),
