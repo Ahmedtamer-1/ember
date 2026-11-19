@@ -163,7 +163,6 @@ function scheduleSave() {
 }
 function setKey(k, v, save) {
   if (v === "" || v === null || v === undefined) delete state[k]; else state[k] = String(v);
-  if (k === "mode" && v) emberSend("settings_set:theme=" + v);
   if (k !== "enabled" && state.enabled !== "true") { state.enabled = "true"; syncMaster(); }
   sendPreview();
   if (save) scheduleSave();
@@ -402,7 +401,7 @@ function build() {
   PAGE_COLORS.forEach(function (c) { pg.appendChild(row(c[1], null, colorCtl(c[0]))); });
 
   var sh = document.getElementById("shape-box");
-  sh.appendChild(row("Light / dark base", "Also switches the window frame and web content.", segCtl("mode", [["system", "System"], ["light", "Light"], ["dark", "Dark"]], "system")));
+  sh.appendChild(row("Light / dark base", "Also switches the window frame and web pages. Auto uses the Theme choice in Settings.", segCtl("mode", [["system", "Auto"], ["light", "Light"], ["dark", "Dark"]], "system")));
   sh.appendChild(row("Tab style", null, segCtl("tab_style", [["classic", "Classic"], ["pill", "Pill"], ["underline", "Underline"], ["flat", "Flat"]], "classic")));
   sh.appendChild(row("Tab corner radius", null, rangeCtl("radius_tab", 0, 20, 1, 8, "px")));
   sh.appendChild(row("Max tab width", null, rangeCtl("tab_max_width", 100, 400, 5, 240, "px")));
@@ -479,11 +478,10 @@ function replaceState(v, enable) {
   if (img && state.bg_mode === "image" && !state.image) state.image = img;
   if (vid && state.bg_mode === "video" && !state.video) state.video = vid;
   if (enable) state.enabled = "true";
-  if (state.mode) emberSend("settings_set:theme=" + state.mode);
   refreshAll(); sendPreview(); scheduleSave();
 }
 function applyPreset(p) {
-  if (!Object.keys(p.v).length) { replaceState({ enabled: "false" }, false); emberSend("settings_set:theme=system"); toast("Back to Ember default"); return; }
+  if (!Object.keys(p.v).length) { replaceState({ enabled: "false" }, false); toast("Back to Ember default"); return; }
   replaceState(Object.assign({ name: p.name }, p.v), true);
   toast(p.name + " applied");
 }

@@ -234,7 +234,7 @@ fn ensure_active_tab_webview(
         .with_bounds(env.content_bounds)
         .with_visible(false)
         .with_background_color(ui::theme_background_rgba(
-            current_settings.theme,
+            effective_theme_pref(current_settings.theme),
             env.window,
         ))
         .with_clipboard(true)
@@ -319,7 +319,7 @@ fn ensure_active_tab_webview(
     apply_autofill_to_webview(&webview, &current_settings);
 
     // Apply active theme to the new webview
-    ui::apply_webview_theme(&webview, current_settings.theme);
+    ui::apply_webview_theme(&webview, effective_theme_pref(current_settings.theme));
 
     // Load either internal `ember://` HTML or external URL BEFORE zooming so WebView2's
     // per-origin zoom never mutates `about:blank` (shared with the UI WebView).
@@ -782,7 +782,7 @@ fn sync_chrome_ui(
     let summaries = tabs.summaries();
     let appearance = {
         let mut app = ui::query_window_appearance(window);
-        app.is_dark = settings.get().theme.resolve_is_dark(app.is_dark);
+        app.is_dark = effective_theme_pref(settings.get().theme).resolve_is_dark(app.is_dark);
         app
     };
 
@@ -931,7 +931,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .with_window_icon(crate::brand::icon(crate::brand::WINDOW_ICON_SIZE));
     let window = ui::configure_window_builder(builder).build(&event_loop)?;
     ui::install_window_frame(&window);
-    ui::apply_theme_preference(&window, init_settings.theme);
+    // Light/dark actually in effect (the custom theme's mode can override Settings).
+    let mut applied_theme_pref = effective_theme_pref(init_settings.theme);
+    ui::apply_theme_preference(&window, applied_theme_pref);
 
     let (initial_chrome_bounds, mut current_content_bounds) =
         ui::compute_layout_bounds(window.inner_size(), window.scale_factor());
@@ -959,7 +961,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .build_as_child(&window)?;
     let _ = chrome_webview.zoom(1.0);
     ui::bring_chrome_webview_to_front(&window);
-    ui::apply_webview_theme(&chrome_webview, init_settings.theme);
+    ui::apply_webview_theme(&chrome_webview, applied_theme_pref);
 
     #[cfg(debug_assertions)]
     if open_ui_devtools_on_start {
@@ -1389,7 +1391,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 ..
             } => {
                 ui::apply_window_chrome_style(&window);
-                let theme_pref = settings.get().theme;
+                let theme_pref = effective_theme_pref(settings.get().theme);
                 ui::apply_webview_theme(&chrome_webview, theme_pref);
                 let content_bg = ui::theme_background_rgba(theme_pref, &window);
                 tabs.for_each_webview(|wv| {
@@ -3028,13 +3030,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
 
                                 if let Some(theme) = theme_to_apply {
-                                    ui::apply_theme_preference(&window, theme);
-                                    ui::apply_webview_theme(&chrome_webview, theme);
-                                    let content_bg = ui::theme_background_rgba(theme, &window);
-                                    tabs.for_each_webview(|wv| {
-                                        ui::apply_webview_theme(wv, theme);
-                                        let _ = wv.set_background_color(content_bg);
-                                    });
+                                    applied_theme_pref = effective_theme_pref(theme);
+                                    apply_light_dark(&window, &chrome_webview, &tabs, applied_theme_pref);
                                 }
                                 if suspend_changed {
                                     // `tab_suspend_timeout()` maps 0 ("Never") to 365 days.
@@ -3059,6 +3056,21 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 apply_custom_theme_everywhere(&chrome_webview, &tabs, !settings.get().tab_animations_enabled);
                                 wallpaper_needs_focus = crate::theme::current().animates_focus_only();
                                 signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
+                                let pref = effective_theme_pref(settings.get().theme);
+                                if pref != applied_theme_pref {
+                                    applied_theme_pref = pref;
+                                    apply_light_dark(&window, &chrome_webview, &tabs, pref);
+                                    sync_chrome_ui(
+                                        &chrome_webview,
+                                        &window,
+                                        &tabs,
+                                        &storage,
+                                        &adblocker,
+                                        &settings,
+                                        &mut find_state,
+                                        &downloads,
+                                    );
+                                }
                             }
                             PageIpcEvent::ThemeSave(payload) => {
                                 let theme = crate::theme::parse_payload(&payload);
@@ -3068,6 +3080,21 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 apply_custom_theme_everywhere(&chrome_webview, &tabs, !settings.get().tab_animations_enabled);
                                 wallpaper_needs_focus = crate::theme::current().animates_focus_only();
                                 signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
+                                let pref = effective_theme_pref(settings.get().theme);
+                                if pref != applied_theme_pref {
+                                    applied_theme_pref = pref;
+                                    apply_light_dark(&window, &chrome_webview, &tabs, pref);
+                                    sync_chrome_ui(
+                                        &chrome_webview,
+                                        &window,
+                                        &tabs,
+                                        &storage,
+                                        &adblocker,
+                                        &settings,
+                                        &mut find_state,
+                                        &downloads,
+                                    );
+                                }
                             }
                             PageIpcEvent::NewtabSave(payload) => {
                                 // The page already shows the change; just persist it.
@@ -3093,6 +3120,21 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 apply_custom_theme_everywhere(&chrome_webview, &tabs, !settings.get().tab_animations_enabled);
                                 wallpaper_needs_focus = crate::theme::current().animates_focus_only();
                                 signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
+                                let pref = effective_theme_pref(settings.get().theme);
+                                if pref != applied_theme_pref {
+                                    applied_theme_pref = pref;
+                                    apply_light_dark(&window, &chrome_webview, &tabs, pref);
+                                    sync_chrome_ui(
+                                        &chrome_webview,
+                                        &window,
+                                        &tabs,
+                                        &storage,
+                                        &adblocker,
+                                        &settings,
+                                        &mut find_state,
+                                        &downloads,
+                                    );
+                                }
                             }
                             PageIpcEvent::WallpaperBegin { ext, size } => {
                                 let r = crate::theme::wallpaper_upload_begin(&ext, size)
@@ -3113,6 +3155,21 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 apply_custom_theme_everywhere(&chrome_webview, &tabs, !settings.get().tab_animations_enabled);
                                 wallpaper_needs_focus = crate::theme::current().animates_focus_only();
                                 signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
+                                let pref = effective_theme_pref(settings.get().theme);
+                                if pref != applied_theme_pref {
+                                    applied_theme_pref = pref;
+                                    apply_light_dark(&window, &chrome_webview, &tabs, pref);
+                                    sync_chrome_ui(
+                                        &chrome_webview,
+                                        &window,
+                                        &tabs,
+                                        &storage,
+                                        &adblocker,
+                                        &settings,
+                                        &mut find_state,
+                                        &downloads,
+                                    );
+                                }
                             }
                             PageIpcEvent::SettingsAction { name, arg } => {
                                 match name.as_str() {
@@ -3656,6 +3713,39 @@ fn apply_custom_theme_to_chrome(chrome_webview: &WebView) {
     let _ = chrome_webview.evaluate_script(&script);
 }
 
+/// The light/dark preference in effect: the custom theme's mode when it sets light or dark,
+/// otherwise the Settings choice.
+fn effective_theme_pref(settings_pref: ThemePreference) -> ThemePreference {
+    resolve_theme_pref(settings_pref, crate::theme::current().dark_override())
+}
+
+fn resolve_theme_pref(
+    settings_pref: ThemePreference,
+    dark_override: Option<bool>,
+) -> ThemePreference {
+    match dark_override {
+        Some(true) => ThemePreference::Dark,
+        Some(false) => ThemePreference::Light,
+        None => settings_pref,
+    }
+}
+
+/// Switches the window frame, the toolbar and every live tab to `pref` (light/dark).
+fn apply_light_dark(
+    window: &Window,
+    chrome_webview: &WebView,
+    tabs: &TabManager,
+    pref: ThemePreference,
+) {
+    ui::apply_theme_preference(window, pref);
+    ui::apply_webview_theme(chrome_webview, pref);
+    let content_bg = ui::theme_background_rgba(pref, window);
+    tabs.for_each_webview(|wv| {
+        ui::apply_webview_theme(wv, pref);
+        let _ = wv.set_background_color(content_bg);
+    });
+}
+
 /// Pushes the current custom theme into the chrome and into every open internal `ember://` page
 /// that has a live WebView, so the toolbar, New Tab, Settings, etc. all update together.
 /// Suspended or not-yet-created tabs need nothing: they render with the current theme.
@@ -3914,6 +4004,15 @@ fn build_selftest_report_json(items: &[SelfTestItem]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_resolve_theme_pref_custom_mode_overrides_settings() {
+        use ThemePreference::{Dark, Light, System};
+        assert_eq!(resolve_theme_pref(System, Some(true)), Dark);
+        assert_eq!(resolve_theme_pref(Dark, Some(false)), Light);
+        assert_eq!(resolve_theme_pref(Light, None), Light);
+        assert_eq!(resolve_theme_pref(System, None), System);
+    }
 
     #[test]
     fn test_focus_poll_rate_limits_checks() {

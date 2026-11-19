@@ -289,6 +289,19 @@ impl CustomTheme {
         self.get("mode")
     }
 
+    /// Light/dark override from the theme's `mode`: `Some(true)` for dark, `Some(false)` for
+    /// light, `None` when the theme is off or its mode is "system" (follow Settings).
+    pub fn dark_override(&self) -> Option<bool> {
+        if !self.enabled() {
+            return None;
+        }
+        match self.mode() {
+            Some("dark") => Some(true),
+            Some("light") => Some(false),
+            _ => None,
+        }
+    }
+
     fn num(&self, key: &str) -> Option<f64> {
         self.get(key).and_then(|v| v.parse::<f64>().ok())
     }
@@ -1462,6 +1475,27 @@ mod tests {
         let html = inject_wallpaper_runtime("<html><body>x</body></html>", "{\"active\":false}");
         assert!(html.contains("window.__emberSetCustomTheme = function"));
         assert!(html.contains("window.__emberSetWallpaper = function"));
+    }
+
+    #[test]
+    fn dark_override_only_when_enabled_with_light_or_dark() {
+        assert_eq!(
+            CustomTheme::parse("enabled=true\nmode=dark").dark_override(),
+            Some(true)
+        );
+        assert_eq!(
+            CustomTheme::parse("enabled=true\nmode=light").dark_override(),
+            Some(false)
+        );
+        assert_eq!(
+            CustomTheme::parse("enabled=true\nmode=system").dark_override(),
+            None
+        );
+        assert_eq!(CustomTheme::parse("enabled=true").dark_override(), None);
+        assert_eq!(
+            CustomTheme::parse("enabled=false\nmode=dark").dark_override(),
+            None
+        );
     }
 
     #[test]
