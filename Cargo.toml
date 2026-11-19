@@ -23,7 +23,7 @@ test = false
 # Cross-platform window creation and event-loop management for the browser shell
 tao = "0.31"
 # System webview abstraction (WebView2 on Windows, WebKit on macOS/Linux)
-wry = { version = "0.50", default-features = false }
+wry = { version = "0.50", default-features = false, features = ["protocol"] }  # "protocol": custom protocol serving the theme wallpaper video (no extra crates)
 # Brave's adblock-rust engine for EasyList/EasyPrivacy/uBO network, cosmetic, and scriptlet filtering
 adblock = { version = "0.13", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
 # Lightweight SQLite bindings for persistent browsing history, bookmarks, and per-site zoom settings

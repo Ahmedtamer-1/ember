@@ -570,6 +570,20 @@ pub enum PageIpcEvent {
     ThemeRevert,
     /// `ember://newtab`: persist the new tab page configuration (`newtab.txt` line format).
     NewtabSave(String),
+    /// `ember://themes`: start a wallpaper video upload (`ext`, total `size` in bytes).
+    WallpaperBegin {
+        ext: String,
+        size: u64,
+    },
+    /// `ember://themes`: base64 chunk number `seq` of the wallpaper video upload.
+    WallpaperChunk {
+        seq: u64,
+        data: String,
+    },
+    /// `ember://themes`: finish the wallpaper video upload.
+    WallpaperEnd,
+    /// `ember://themes`: delete the stored wallpaper video.
+    WallpaperClear,
     ShortcutNewTab,
     ShortcutCloseTab,
     ShortcutReopenClosedTab,
@@ -677,6 +691,10 @@ pub fn is_privileged_page_event(event: &PageIpcEvent) -> bool {
             | PageIpcEvent::ThemeSave(_)
             | PageIpcEvent::ThemeRevert
             | PageIpcEvent::NewtabSave(_)
+            | PageIpcEvent::WallpaperBegin { .. }
+            | PageIpcEvent::WallpaperChunk { .. }
+            | PageIpcEvent::WallpaperEnd
+            | PageIpcEvent::WallpaperClear
     )
 }
 
@@ -891,6 +909,22 @@ fn parse_page_ipc_body(raw: &str) -> Option<PageIpcEvent> {
                 Some(PageIpcEvent::ThemeRevert)
             } else if let Some(payload) = trimmed.strip_prefix("newtab_save:") {
                 Some(PageIpcEvent::NewtabSave(payload.to_owned()))
+            } else if let Some(rest) = trimmed.strip_prefix("wallpaper_begin:") {
+                let (ext, size) = rest.split_once(':')?;
+                Some(PageIpcEvent::WallpaperBegin {
+                    ext: ext.trim().to_owned(),
+                    size: size.trim().parse().ok()?,
+                })
+            } else if let Some(rest) = trimmed.strip_prefix("wallpaper_chunk:") {
+                let (seq, data) = rest.split_once(':')?;
+                Some(PageIpcEvent::WallpaperChunk {
+                    seq: seq.trim().parse().ok()?,
+                    data: data.to_owned(),
+                })
+            } else if trimmed == "wallpaper_end" {
+                Some(PageIpcEvent::WallpaperEnd)
+            } else if trimmed == "wallpaper_clear" {
+                Some(PageIpcEvent::WallpaperClear)
             } else if let Some(target) = trimmed.strip_prefix("https_proceed:") {
                 Some(PageIpcEvent::HttpsProceed(target.trim().to_owned()))
             } else if let Some(url) = trimmed.strip_prefix("cosmetic_init:") {
@@ -2387,6 +2421,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn wallpaper_ipc_is_privileged_and_parsed() {
+        for msg in [
+            "wallpaper_begin:mp4:1024",
+            "wallpaper_chunk:0:AAAA",
+            "wallpaper_end",
+            "wallpaper_clear",
+        ] {
+            assert_eq!(parse_page_ipc_event(msg), None, "{msg}");
+        }
+        let tok = internal_ipc_token();
+        let check = |body: &str, url: &str, src: &str| {
+            let raw = format!("{INTERNAL_IPC_PREFIX}{tok}:{body}");
+            parse_page_ipc_event_checked(&raw, tok, Some(url), src)
+        };
+        assert_eq!(
+            check("wallpaper_begin:webm:2048", "ember://themes", "about:blank"),
+            Some(PageIpcEvent::WallpaperBegin {
+                ext: String::from("webm"),
+                size: 2048
+            })
+        );
+        assert_eq!(
+            check("wallpaper_chunk:3:QUJD", "ember://themes", "about:blank"),
+            Some(PageIpcEvent::WallpaperChunk {
+                seq: 3,
+                data: String::from("QUJD")
+            })
+        );
+        assert_eq!(
+            check("wallpaper_begin:mp4:huge", "ember://themes", "about:blank"),
+            None
+        );
+        assert_eq!(
+            check(
+                "wallpaper_end",
+                "https://evil.example",
+                "https://evil.example"
+            ),
+            None
+        );
     }
 
     #[test]

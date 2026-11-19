@@ -44,6 +44,9 @@
 #toast { position: fixed; bottom: 22px; right: 24px; padding: 9px 14px; border-radius: 8px; background: var(--text); color: var(--bg); font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 10; }
 #toast.show { opacity: 1; }
 .off-note { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.sub-head { padding: 12px 16px 4px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border); }
+.vid-status { font-size: 12px; color: var(--muted); min-width: 110px; text-align: right; font-variant-numeric: tabular-nums; }
+.preset .anim-tag { position: absolute; right: 8px; top: 8px; font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 999px; background: rgba(0,0,0,.45); color: #fff; }
 </style>
 </head>
 <body>
@@ -133,6 +136,9 @@ var PRESETS = [
   { name: "Solar Flare", v: { mode: "dark", accent: "#ffb000", tab_strip_bg: "#1c1206", tab_active_bg: "#2d1d0a", toolbar_bg: "#2d1d0a", toolbar_border: "#4a2f0f", omnibox_bg: "#1c1206", omnibox_focus_bg: "#1c1206", text_primary: "#fff1d6", text_secondary: "#d6a964", page_bg: "#140d04", page_surface: "#2d1d0a", page_border: "#4a2f0f", page_text: "#fff1d6", page_muted: "#d6a964", active_glow: "true", glow_color: "#ff6a00", bg_mode: "gradient", gradient_kind: "conic", gradient_angle: "200", gradient_from: "#ff6a00", gradient_via: "#ffb000", gradient_to: "#ff2d55", bg_strength: "40", bg_target: "chrome" } },
   { name: "Terminal", v: { mode: "dark", accent: "#39ff14", tab_strip_bg: "#000000", tab_active_bg: "#0a140a", toolbar_bg: "#0a140a", toolbar_border: "#1f3d1f", omnibox_bg: "#000000", omnibox_focus_bg: "#000000", text_primary: "#39ff14", text_secondary: "#22a80c", dropdown_bg: "#050a05", dropdown_border: "#1f3d1f", divider: "rgba(57,255,20,0.25)", page_bg: "#000000", page_surface: "#0a140a", page_border: "#1f3d1f", page_text: "#39ff14", page_muted: "#22a80c", font_ui: "Consolas, \"Cascadia Mono\", monospace", tab_style: "flat", radius_tab: "0", radius_omnibox: "0", radius_button: "0", radius_menu: "0" } },
   { name: "Mono Minimal", v: { mode: "light", accent: "#111111", tab_strip_bg: "#ffffff", tab_active_bg: "#ffffff", toolbar_bg: "#ffffff", toolbar_border: "#e6e6e6", omnibox_bg: "#f4f4f4", omnibox_focus_bg: "#ffffff", text_primary: "#111111", text_secondary: "#666666", page_bg: "#ffffff", page_surface: "#fafafa", page_border: "#e6e6e6", page_text: "#111111", page_muted: "#666666", tab_style: "underline", anim_scale: "0.6" } },
+  { name: "Aurora", v: { mode: "dark", accent: "#3ee6b5", tab_strip_bg: "#07131f", tab_active_bg: "rgba(255,255,255,0.12)", toolbar_bg: "#0a1a2a", toolbar_border: "rgba(62,230,181,0.25)", omnibox_bg: "rgba(0,0,0,0.3)", omnibox_focus_bg: "rgba(0,0,0,0.4)", text_primary: "#e6fff7", text_secondary: "#9fd8c8", dropdown_bg: "#0b1d2c", dropdown_border: "#1d4a4a", page_bg: "#061019", page_surface: "rgba(255,255,255,0.07)", page_surface_hover: "rgba(255,255,255,0.12)", page_border: "rgba(255,255,255,0.14)", page_text: "#e6fff7", page_muted: "#9fd8c8", tab_style: "pill", radius_tab: "12", bg_mode: "animated", anim_style: "aurora", anim_speed: "1", gradient_angle: "160", gradient_from: "#04121f", gradient_via: "#19d3a2", gradient_to: "#6a5cff", bg_strength: "70", bg_target: "both", particles: "stars", particle_count: "35", particle_color: "#d9fff4", particle_speed: "0.8" } },
+  { name: "Synthwave Drive", v: { mode: "dark", accent: "#ff2e88", tab_strip_bg: "#14051f", tab_active_bg: "rgba(255,46,136,0.22)", toolbar_bg: "#1d0830", toolbar_border: "#4a1460", omnibox_bg: "rgba(10,0,20,0.55)", omnibox_focus_bg: "rgba(10,0,20,0.7)", text_primary: "#ffe9f6", text_secondary: "#e3a3d0", dropdown_bg: "#1d0830", dropdown_border: "#5a1a74", divider: "rgba(255,46,136,0.3)", page_bg: "#12041c", page_surface: "rgba(255,255,255,0.06)", page_surface_hover: "rgba(255,46,136,0.14)", page_border: "rgba(255,46,136,0.3)", page_text: "#ffe9f6", page_muted: "#e3a3d0", active_glow: "true", glow_color: "#ff2e88", tab_style: "underline", font_ui: "\"Trebuchet MS\", sans-serif", bg_mode: "animated", anim_style: "flow", anim_speed: "1.4", gradient_kind: "linear", gradient_angle: "90", gradient_from: "#2b0a3d", gradient_via: "#ff2e88", gradient_to: "#ffb347", bg_strength: "55", bg_target: "both" } },
+  { name: "Snowfall", v: { mode: "dark", accent: "#8ec5ff", tab_strip_bg: "#0d1b2e", tab_active_bg: "rgba(255,255,255,0.12)", toolbar_bg: "#13263f", toolbar_border: "#24405f", omnibox_bg: "rgba(0,0,0,0.25)", omnibox_focus_bg: "rgba(0,0,0,0.35)", text_primary: "#eef6ff", text_secondary: "#a9c3e0", dropdown_bg: "#13263f", dropdown_border: "#2b4a6e", page_bg: "#0b1726", page_surface: "rgba(255,255,255,0.06)", page_surface_hover: "rgba(255,255,255,0.1)", page_border: "rgba(255,255,255,0.12)", page_text: "#eef6ff", page_muted: "#a9c3e0", radius_tab: "10", bg_mode: "animated", anim_style: "pulse", anim_speed: "0.6", gradient_angle: "180", gradient_from: "#1e3a5f", gradient_via: "#5b8bd0", gradient_to: "#0b1726", bg_strength: "60", bg_target: "both", particles: "snow", particle_count: "80", particle_speed: "1", particle_color: "#ffffff" } },
   { name: "Ocean Glass", v: { mode: "dark", accent: "#4dd0e1", text_primary: "#e0f7fa", text_secondary: "#9fd3db", tab_active_bg: "rgba(255,255,255,0.14)", omnibox_bg: "rgba(0,0,0,0.25)", omnibox_focus_bg: "rgba(0,0,0,0.35)", page_surface: "rgba(255,255,255,0.08)", page_border: "rgba(255,255,255,0.15)", page_text: "#e0f7fa", page_muted: "#9fd3db", tab_style: "pill", radius_tab: "12", bg_mode: "gradient", gradient_kind: "linear", gradient_angle: "160", gradient_from: "#003b5c", gradient_via: "#00796b", gradient_to: "#26c6da", bg_strength: "80", page_blur: "0", bg_target: "both" } }
 ];
 
@@ -296,7 +302,7 @@ function fontCtl() {
 function imageCtl() {
   var box = el("div", { "class": "img-drop" });
   var thumb = el("div", { "class": "img-thumb" });
-  var file = el("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif,image/avif" }); file.style.display = "none";
+  var file = el("input", { type: "file", accept: "image/png,image/apng,image/jpeg,image/webp,image/gif,image/avif" }); file.style.display = "none";
   var pick = el("button", { "class": "btn" }, "Choose image…");
   var clr = el("button", { "class": "clear-btn", title: "Remove image" }, "&#215;");
   pick.addEventListener("click", function () { file.click(); });
@@ -306,7 +312,7 @@ function imageCtl() {
     var rd = new FileReader();
     rd.onload = function () {
       var url = String(rd.result).replace(/^data:image\/jpg;/, "data:image/jpeg;");
-      if (!/^data:image\/(png|jpeg|webp|gif|avif);base64,/.test(url)) { toast("Unsupported image type"); return; }
+      if (!/^data:image\/(png|apng|jpeg|webp|gif|avif);base64,/.test(url)) { toast("Unsupported image type"); return; }
       state.bg_mode = "image";
       setKey("image", url, true); refreshAll();
     };
@@ -317,6 +323,75 @@ function imageCtl() {
   box.appendChild(thumb); box.appendChild(pick); box.appendChild(clr); box.appendChild(file);
   refreshers.push(refresh); refresh();
   return box;
+}
+
+/* ---------- video wallpaper upload ---------- */
+// The file is streamed to Ember in base64 chunks; each chunk waits for Ember's ack, so only
+// one chunk is ever in flight. Ember stores it as wallpaper.<ext> (never inside the theme).
+var MAX_VIDEO = 50 * 1024 * 1024, VIDEO_CHUNK = 768 * 1024;
+var upload = null, videoStatus = null;
+function setVideoStatus(t) { if (videoStatus) videoStatus.textContent = t; }
+function videoLabel() { return state.video ? "wallpaper." + state.video : "No video"; }
+function videoCtl() {
+  var box = el("div", { "class": "img-drop" });
+  videoStatus = el("span", { "class": "vid-status" });
+  var file = el("input", { type: "file", accept: "video/mp4,video/webm,.mp4,.webm" }); file.style.display = "none";
+  var pick = el("button", { "class": "btn" }, "Choose video&#8230;");
+  var clr = el("button", { "class": "clear-btn", title: "Remove video" }, "&#215;");
+  pick.addEventListener("click", function () { if (!upload) file.click(); });
+  file.addEventListener("change", function () {
+    var f = file.files && file.files[0]; file.value = ""; if (!f) return;
+    var ext = /\.webm$/i.test(f.name) || f.type === "video/webm" ? "webm" : (/\.mp4$/i.test(f.name) || f.type === "video/mp4" ? "mp4" : "");
+    if (!ext) { toast("Only MP4 and WebM videos are supported"); return; }
+    if (f.size > MAX_VIDEO) { toast("Video too large (max 50 MB)"); return; }
+    if (!f.size) { toast("That file is empty"); return; }
+    upload = { file: f, ext: ext, seq: 0, offset: 0 };
+    setVideoStatus("Uploading 0%");
+    emberSend("wallpaper_begin:" + ext + ":" + f.size);
+  });
+  clr.addEventListener("click", function () {
+    upload = null; emberSend("wallpaper_clear");
+    if (state.bg_mode === "video") state.bg_mode = "none";
+    setKey("video", "", true); refreshAll();
+  });
+  refreshers.push(function () { if (!upload) setVideoStatus(videoLabel()); });
+  box.appendChild(videoStatus); box.appendChild(pick); box.appendChild(clr); box.appendChild(file);
+  setVideoStatus(videoLabel());
+  return box;
+}
+function sendNextChunk() {
+  var u = upload; if (!u) return;
+  if (u.offset >= u.file.size) { emberSend("wallpaper_end"); return; }
+  var blob = u.file.slice(u.offset, u.offset + VIDEO_CHUNK);
+  var rd = new FileReader();
+  rd.onload = function () {
+    if (upload !== u) return;
+    var s = String(rd.result);
+    u.offset += blob.size;
+    emberSend("wallpaper_chunk:" + u.seq + ":" + s.slice(s.indexOf(",") + 1));
+    u.seq++;
+  };
+  rd.onerror = function () { upload = null; setVideoStatus(videoLabel()); toast("Could not read the video file"); };
+  rd.readAsDataURL(blob);
+}
+window.__emberWallpaperUpload = function (stage, ok, detail) {
+  if (!upload) return;
+  if (!ok) { upload = null; setVideoStatus(videoLabel()); toast("Video upload failed: " + detail); return; }
+  if (stage === "end") {
+    upload = null; state.bg_mode = "video";
+    setKey("video", detail, true); refreshAll(); toast("Video wallpaper set");
+    return;
+  }
+  setVideoStatus("Uploading " + Math.floor(100 * upload.offset / upload.file.size) + "%");
+  sendNextChunk();
+};
+// Switch whose default (key absent) is ON.
+function switchOnCtl(key) {
+  var c = el("input", { type: "checkbox", "class": "switch" });
+  c.addEventListener("change", function () { setKey(key, c.checked ? "true" : "false", true); });
+  function refresh() { c.checked = state[key] !== "false"; }
+  refreshers.push(refresh); refresh();
+  return c;
 }
 
 /* ---------- build UI ---------- */
@@ -343,17 +418,27 @@ function build() {
   ty.appendChild(row("Font weight", null, rangeCtl("font_weight", 300, 700, 100, 400, "")));
 
   var bg = document.getElementById("bg-box");
-  bg.appendChild(row("Background", null, segCtl("bg_mode", [["none", "None"], ["gradient", "Gradient"], ["image", "Image"]], "none")));
+  bg.appendChild(row("Background", null, segCtl("bg_mode", [["none", "None"], ["gradient", "Gradient"], ["animated", "Animated"], ["image", "Image"], ["video", "Video"]], "none")));
   bg.appendChild(row("Show on", null, segCtl("bg_target", [["both", "Toolbar + pages"], ["chrome", "Toolbar"], ["pages", "Pages"]], "both")));
   bg.appendChild(row("Gradient type", null, segCtl("gradient_kind", [["linear", "Linear"], ["radial", "Radial"], ["conic", "Conic"]], "linear")));
   bg.appendChild(row("Gradient angle", null, rangeCtl("gradient_angle", 0, 360, 5, 135, "°")));
   bg.appendChild(row("Gradient start", null, colorCtl("gradient_from")));
   bg.appendChild(row("Gradient middle", "Optional", colorCtl("gradient_via")));
   bg.appendChild(row("Gradient end", null, colorCtl("gradient_to")));
-  bg.appendChild(row("Image", "PNG, JPEG, WebP, GIF or AVIF up to 4 MB.", imageCtl()));
+  bg.appendChild(row("Animation style", "Animated mode: moves the gradient colors above.", segCtl("anim_style", [["flow", "Flow"], ["hue", "Hue shift"], ["pulse", "Pulse"], ["aurora", "Aurora"]], "flow")));
+  bg.appendChild(row("Animation speed", null, rangeCtl("anim_speed", 0.1, 5, 0.1, 1, "\u00d7")));
+  bg.appendChild(row("Image", "PNG, JPEG, WebP, GIF or AVIF up to 4 MB. Animated GIF / WebP / APNG play too.", imageCtl()));
   bg.appendChild(row("Image fit", null, segCtl("image_fit", [["cover", "Fill"], ["contain", "Fit"], ["tile", "Tile"]], "cover")));
+  bg.appendChild(row("Video", "Looping, muted MP4 or WebM up to 50 MB (stored next to the theme).", videoCtl()));
   bg.appendChild(row("Background strength", "How much the background shows through the toolbar and pages.", rangeCtl("bg_strength", 0, 100, 1, 60, "%")));
   bg.appendChild(row("Page background blur", null, rangeCtl("page_blur", 0, 30, 1, 0, "px")));
+  bg.appendChild(el("div", { "class": "sub-head" }, "Particles (toolbar)"));
+  bg.appendChild(row("Particles", null, segCtl("particles", [["none", "None"], ["snow", "Snow"], ["stars", "Stars"], ["fireflies", "Fireflies"], ["rain", "Rain"]], "none")));
+  bg.appendChild(row("Particle count", null, rangeCtl("particle_count", 5, 150, 5, 60, "")));
+  bg.appendChild(row("Particle speed", null, rangeCtl("particle_speed", 0.2, 3, 0.1, 1, "\u00d7")));
+  bg.appendChild(row("Particle color", null, colorCtl("particle_color")));
+  bg.appendChild(el("div", { "class": "sub-head" }, "Performance"));
+  bg.appendChild(row("Animate only when focused", "Pause animations, video and particles while Ember is in the background. Always paused when minimized or with reduced motion.", switchOnCtl("animate_focus_only")));
 
   var fx = document.getElementById("fx-box");
   fx.appendChild(row("Glow on active tab & address bar", null, switchCtl("active_glow")));
@@ -364,7 +449,7 @@ function build() {
   PRESETS.forEach(function (p) {
     var b = el("button", { "class": "preset" });
     var v = p.v;
-    var swBg = v.bg_mode === "gradient"
+    var swBg = v.bg_mode === "gradient" || v.bg_mode === "animated"
       ? "linear-gradient(135deg," + [v.gradient_from, v.gradient_via, v.gradient_to].filter(Boolean).join(",") + ")"
       : (v.tab_strip_bg || "#dee1e6");
     b.innerHTML = '<div class="sw"><div class="dot"></div><div class="bar"></div></div><div class="nm"></div>';
@@ -372,6 +457,9 @@ function build() {
     b.querySelector(".dot").style.background = v.accent || "#0067c0";
     b.querySelector(".bar").style.background = v.toolbar_bg || v.tab_active_bg || "#ffffff";
     b.querySelector(".nm").textContent = p.name;
+    if (v.bg_mode === "animated" || (v.particles && v.particles !== "none")) {
+      var tag = el("span", { "class": "anim-tag" }); tag.textContent = "Animated"; b.querySelector(".sw").appendChild(tag);
+    }
     b.addEventListener("click", function () { applyPreset(p); });
     ps.appendChild(b);
   });
@@ -385,10 +473,11 @@ function build() {
 }
 function refreshAll() { refreshers.forEach(function (f) { f(); }); syncMaster(); }
 function replaceState(v, enable) {
-  var img = state.image;
+  var img = state.image, vid = state.video;
   state = {};
   Object.keys(v).forEach(function (k) { state[k] = String(v[k]); });
   if (img && state.bg_mode === "image" && !state.image) state.image = img;
+  if (vid && state.bg_mode === "video" && !state.video) state.video = vid;
   if (enable) state.enabled = "true";
   if (state.mode) emberSend("settings_set:theme=" + state.mode);
   refreshAll(); sendPreview(); scheduleSave();
@@ -427,6 +516,7 @@ function randomize() {
     v.gradient_angle = String(Math.round(Math.random() * 72) * 5);
     v.gradient_from = hsl(h, 70, dark ? 25 : 80); v.gradient_via = hsl(h2, 75, dark ? 40 : 70); v.gradient_to = hsl((h2 + 60) % 360, 70, dark ? 30 : 85);
     v.bg_strength = String(35 + Math.round(Math.random() * 40)); v.bg_target = "both";
+    if (Math.random() < 0.35) { v.bg_mode = "animated"; v.anim_style = ["flow", "hue", "pulse", "aurora"][Math.floor(Math.random() * 4)]; }
   }
   replaceState(v, true);
   toast("Surprise!");

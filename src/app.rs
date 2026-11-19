@@ -232,6 +232,13 @@ fn ensure_active_tab_webview(
         .with_initialization_script(ui::PAGE_INIT_SCRIPT)
         .with_initialization_script(find::FIND_INIT_SCRIPT)
         .with_initialization_script(&ctx_menu_script);
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.with_asynchronous_custom_protocol(
+            crate::theme::WALLPAPER_PROTOCOL.into(),
+            crate::theme::handle_wallpaper_protocol,
+        );
+    }
     if current_settings.send_dnt_and_gpc {
         builder = builder.with_initialization_script(privacy::DNT_GPC_SCRIPT);
     }
@@ -771,10 +778,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .with_transparent(true)
         .with_hotkeys_zoom(false)
         .with_devtools(cfg!(debug_assertions))
-        .with_html(crate::theme::inject_style(
-            ui::CHROME_HTML,
-            &crate::theme::current().chrome_css(),
+        .with_html(crate::theme::inject_wallpaper_runtime(
+            &crate::theme::inject_style(ui::CHROME_HTML, &crate::theme::current().chrome_css()),
+            &crate::theme::chrome_wallpaper_json(),
         ))
+        .with_asynchronous_custom_protocol(
+            crate::theme::WALLPAPER_PROTOCOL.into(),
+            crate::theme::handle_wallpaper_protocol,
+        )
         .with_ipc_handler(move |request| {
             let _ = ipc_proxy.send_event(AppEvent::UiIpc(request.body().clone()));
         })
@@ -788,6 +799,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         chrome_webview.open_devtools();
     }
 
+    // Host state for the animated wallpaper runtime (paused when unfocused / minimized).
+    let mut window_focused = true;
+    let mut window_minimized = false;
     let mut selftest_active = selftest_mode;
     let mut selftest_saw_popup_open = false;
     let mut selftest_saw_popup_close = false;
@@ -1030,10 +1044,15 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             }
             Event::WindowEvent {
                 window_id,
-                event: WindowEvent::Focused(false),
+                event: WindowEvent::Focused(focused),
                 ..
             } if window_id == window.id() => {
-                if overlay_controller.is_expanded() && !ui::is_window_foreground(&window) {
+                window_focused = focused;
+                signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
+                if !focused
+                    && overlay_controller.is_expanded()
+                    && !ui::is_window_foreground(&window)
+                {
                     collapse_overlay_from_host(&mut overlay_controller, "window_blur", &chrome_webview, &window);
                 }
             }
@@ -1043,6 +1062,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 ..
             } if window_id == window.id() => {
                 collapse_overlay_from_host(&mut overlay_controller, "window_resize", &chrome_webview, &window);
+                if window.is_minimized() != window_minimized {
+                    window_minimized = !window_minimized;
+                    signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
+                }
                 let (chrome_bounds, content_bounds) =
                     ui::compute_layout_bounds(physical_size, window.scale_factor());
                 current_content_bounds = content_bounds;
@@ -2713,7 +2736,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             PageIpcEvent::ThemePreview(payload) => {
                                 crate::theme::set_current(crate::theme::parse_payload(&payload));
                                 apply_custom_theme_to_chrome(&chrome_webview);
-                                apply_custom_theme_to_tab(&tabs, tab_id);
+                                apply_custom_theme_to_tab(&tabs, tab_id, !settings.get().tab_animations_enabled);
                             }
                             PageIpcEvent::ThemeSave(payload) => {
                                 let theme = crate::theme::parse_payload(&payload);
@@ -2721,7 +2744,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     eprintln!("[ember][theme] failed to save theme: {err}");
                                 }
                                 apply_custom_theme_to_chrome(&chrome_webview);
-                                apply_custom_theme_to_tab(&tabs, tab_id);
+                                apply_custom_theme_to_tab(&tabs, tab_id, !settings.get().tab_animations_enabled);
                             }
                             PageIpcEvent::NewtabSave(payload) => {
                                 // The page already shows the change; just persist it.
@@ -2733,7 +2756,26 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             PageIpcEvent::ThemeRevert => {
                                 crate::theme::reload_saved();
                                 apply_custom_theme_to_chrome(&chrome_webview);
-                                apply_custom_theme_to_tab(&tabs, tab_id);
+                                apply_custom_theme_to_tab(&tabs, tab_id, !settings.get().tab_animations_enabled);
+                            }
+                            PageIpcEvent::WallpaperBegin { ext, size } => {
+                                let r = crate::theme::wallpaper_upload_begin(&ext, size)
+                                    .map(|()| String::new());
+                                reply_wallpaper_upload(&tabs, tab_id, "begin", r);
+                            }
+                            PageIpcEvent::WallpaperChunk { seq, data } => {
+                                let r = crate::theme::wallpaper_upload_chunk(seq, &data)
+                                    .map(|n| n.to_string());
+                                reply_wallpaper_upload(&tabs, tab_id, "chunk", r);
+                            }
+                            PageIpcEvent::WallpaperEnd => {
+                                let r = crate::theme::wallpaper_upload_finish().map(str::to_owned);
+                                reply_wallpaper_upload(&tabs, tab_id, "end", r);
+                            }
+                            PageIpcEvent::WallpaperClear => {
+                                crate::theme::wallpaper_clear();
+                                apply_custom_theme_to_chrome(&chrome_webview);
+                                apply_custom_theme_to_tab(&tabs, tab_id, !settings.get().tab_animations_enabled);
                             }
                             PageIpcEvent::SettingsAction { name, arg } => {
                                 match name.as_str() {
@@ -3195,7 +3237,8 @@ fn collapse_overlay_from_host(
     }
 }
 
-/// Pushes the current custom theme CSS into the chrome webview (`window.__emberSetCustomTheme`).
+/// Pushes the current custom theme CSS into the chrome webview (`window.__emberSetCustomTheme`)
+/// and the animated wallpaper config (`window.__emberSetWallpaper`).
 fn apply_custom_theme_to_chrome(chrome_webview: &WebView) {
     let css = crate::theme::current().chrome_css();
     let mut script = String::from(
@@ -3203,11 +3246,13 @@ fn apply_custom_theme_to_chrome(chrome_webview: &WebView) {
     );
     push_js_quoted(&mut script, &css);
     script.push_str(");}");
+    push_wallpaper_call(&mut script, &crate::theme::chrome_wallpaper_json());
     let _ = chrome_webview.evaluate_script(&script);
 }
 
-/// Pushes the current custom theme's page CSS into an internal page tab (the theme editor).
-fn apply_custom_theme_to_tab(tabs: &TabManager, tab_id: usize) {
+/// Pushes the current custom theme's page CSS and wallpaper config into an internal page tab
+/// (the theme editor).
+fn apply_custom_theme_to_tab(tabs: &TabManager, tab_id: usize, reduced_motion: bool) {
     let Some(webview) = tabs.get_tab(tab_id).and_then(|t| t.webview.as_ref()) else {
         return;
     };
@@ -3216,6 +3261,67 @@ fn apply_custom_theme_to_tab(tabs: &TabManager, tab_id: usize) {
         "if(typeof window.__emberSetCustomTheme==='function'){window.__emberSetCustomTheme(",
     );
     push_js_quoted(&mut script, &css);
+    script.push_str(");}");
+    push_wallpaper_call(
+        &mut script,
+        &crate::theme::page_wallpaper_json(reduced_motion),
+    );
+    let _ = webview.evaluate_script(&script);
+}
+
+/// Appends a guarded `window.__emberSetWallpaper(<config>)` call. `config_json` is built by
+/// `theme` from validated values with `<`, `>` and quotes escaped.
+fn push_wallpaper_call(script: &mut String, config_json: &str) {
+    script
+        .push_str("if(typeof window.__emberSetWallpaper==='function'){window.__emberSetWallpaper(");
+    script.push_str(config_json);
+    script.push_str(");}");
+}
+
+/// Tells the chrome (and the active tab when it is an internal page) whether the window is
+/// focused / minimized, so animated wallpapers, videos and particles pause.
+fn signal_wallpaper_host(
+    chrome_webview: &WebView,
+    tabs: &TabManager,
+    focused: bool,
+    minimized: bool,
+) {
+    let script = format!(
+        "if(typeof window.__emberWallpaperHost==='function'){{window.__emberWallpaperHost({{focused:{focused},minimized:{minimized}}});}}"
+    );
+    let _ = chrome_webview.evaluate_script(&script);
+    if let Some(webview) = tabs
+        .active_tab()
+        .filter(|t| pages::is_internal_url(&t.url))
+        .and_then(|t| t.webview.as_ref())
+    {
+        let _ = webview.evaluate_script(&script);
+    }
+}
+
+/// Reports a wallpaper upload step back to the theme editor
+/// (`window.__emberWallpaperUpload(stage, ok, detail)`).
+fn reply_wallpaper_upload(
+    tabs: &TabManager,
+    tab_id: usize,
+    stage: &str,
+    result: Result<String, String>,
+) {
+    let Some(webview) = tabs.get_tab(tab_id).and_then(|t| t.webview.as_ref()) else {
+        return;
+    };
+    let mut script = String::from(
+        "if(typeof window.__emberWallpaperUpload==='function'){window.__emberWallpaperUpload(",
+    );
+    push_js_quoted(&mut script, stage);
+    let (ok, detail) = match &result {
+        Ok(v) => ("true", v.as_str()),
+        Err(e) => ("false", e.as_str()),
+    };
+    script.push(',');
+    script.push_str(ok);
+    script.push(',');
+    push_js_quoted(&mut script, detail);
     script.push_str(");}");
     let _ = webview.evaluate_script(&script);
 }
