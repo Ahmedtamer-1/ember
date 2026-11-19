@@ -1314,6 +1314,16 @@ pub fn is_window_foreground(window: &Window) -> bool {
     platform::is_window_foreground(window)
 }
 
+/// Like [`is_window_foreground`], but `None` where the platform cannot tell (non-Windows), so
+/// callers keep relying on window focus events there.
+pub fn window_foreground_state(window: &Window) -> Option<bool> {
+    if cfg!(target_os = "windows") {
+        Some(platform::is_window_foreground(window))
+    } else {
+        None
+    }
+}
+
 /// Snapshot of state synced from Rust to the top Chrome UI WebView.
 pub struct ChromeSyncState<'a> {
     pub tab_revision: u64,

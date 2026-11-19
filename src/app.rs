@@ -968,6 +968,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
     // Host state for the animated wallpaper runtime (paused when unfocused / minimized).
     let mut window_focused = true;
+    // tao reports `Focused(false)` whenever keyboard focus moves into a child WebView, and
+    // never reports the matching `Focused(true)`, so focus is re-checked against the OS
+    // foreground window instead (see `FocusPoll`).
+    let mut focus_poll = FocusPoll::default();
+    let mut wallpaper_needs_focus = crate::theme::current().animates_focus_only();
     store_window_logical_height(&window);
     let mut window_minimized = false;
     // "Clear cookies and site data when Ember closes": the data is cleared at exit (see
@@ -1157,6 +1162,19 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         if overlay_controller.is_expanded() {
             wait_slice = wait_slice.min(Duration::from_millis(50));
         }
+        if wallpaper_needs_focus {
+            // Keeps focus polling going while an animated wallpaper pauses on focus loss.
+            wait_slice = wait_slice.min(FOCUS_POLL_INTERVAL);
+            let now = Instant::now();
+            if !window_minimized && focus_poll.due(now) {
+                if let Some(fg) = ui::window_foreground_state(&window) {
+                    if fg != window_focused {
+                        window_focused = fg;
+                        signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
+                    }
+                }
+            }
+        }
         *control_flow = ControlFlow::WaitUntil(Instant::now() + wait_slice);
 
         if session_enabled && session_saver.poll(Instant::now()) && !tabs.summaries().is_empty() {
@@ -1298,7 +1316,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 event: WindowEvent::Focused(focused),
                 ..
             } if window_id == window.id() => {
-                window_focused = focused;
+                // Focus moving into a child WebView (page or toolbar) also arrives as
+                // `Focused(false)`; the window is still in use while it is the foreground window.
+                window_focused = effective_focus(focused, ui::window_foreground_state(&window));
                 signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
                 if !focused
                     && overlay_controller.is_expanded()
@@ -3036,16 +3056,18 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             }
                             PageIpcEvent::ThemePreview(payload) => {
                                 crate::theme::set_current(crate::theme::parse_payload(&payload));
-                                apply_custom_theme_to_chrome(&chrome_webview);
-                                apply_custom_theme_to_tab(&tabs, tab_id, !settings.get().tab_animations_enabled);
+                                apply_custom_theme_everywhere(&chrome_webview, &tabs, !settings.get().tab_animations_enabled);
+                                wallpaper_needs_focus = crate::theme::current().animates_focus_only();
+                                signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
                             }
                             PageIpcEvent::ThemeSave(payload) => {
                                 let theme = crate::theme::parse_payload(&payload);
                                 if let Err(err) = crate::theme::save(theme) {
                                     eprintln!("[ember][theme] failed to save theme: {err}");
                                 }
-                                apply_custom_theme_to_chrome(&chrome_webview);
-                                apply_custom_theme_to_tab(&tabs, tab_id, !settings.get().tab_animations_enabled);
+                                apply_custom_theme_everywhere(&chrome_webview, &tabs, !settings.get().tab_animations_enabled);
+                                wallpaper_needs_focus = crate::theme::current().animates_focus_only();
+                                signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
                             }
                             PageIpcEvent::NewtabSave(payload) => {
                                 // The page already shows the change; just persist it.
@@ -3053,11 +3075,24 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 if let Err(err) = crate::newtab::save(config) {
                                     eprintln!("[ember][newtab] failed to save new tab config: {err}");
                                 }
+                                // Other open New Tab pages are re-rendered with the new layout.
+                                let mut stale = Vec::new();
+                                tabs.for_each_tab_with_webview(|t, _| {
+                                    if t.id != tab_id
+                                        && pages::canonical_internal_url(&t.url) == Some(pages::NEWTAB_URL)
+                                    {
+                                        stale.push(t.id);
+                                    }
+                                });
+                                for id in stale {
+                                    reload_tab(&mut tabs, id, &storage, &settings, &adblocker);
+                                }
                             }
                             PageIpcEvent::ThemeRevert => {
                                 crate::theme::reload_saved();
-                                apply_custom_theme_to_chrome(&chrome_webview);
-                                apply_custom_theme_to_tab(&tabs, tab_id, !settings.get().tab_animations_enabled);
+                                apply_custom_theme_everywhere(&chrome_webview, &tabs, !settings.get().tab_animations_enabled);
+                                wallpaper_needs_focus = crate::theme::current().animates_focus_only();
+                                signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
                             }
                             PageIpcEvent::WallpaperBegin { ext, size } => {
                                 let r = crate::theme::wallpaper_upload_begin(&ext, size)
@@ -3075,8 +3110,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             }
                             PageIpcEvent::WallpaperClear => {
                                 crate::theme::wallpaper_clear();
-                                apply_custom_theme_to_chrome(&chrome_webview);
-                                apply_custom_theme_to_tab(&tabs, tab_id, !settings.get().tab_animations_enabled);
+                                apply_custom_theme_everywhere(&chrome_webview, &tabs, !settings.get().tab_animations_enabled);
+                                wallpaper_needs_focus = crate::theme::current().animates_focus_only();
+                                signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
                             }
                             PageIpcEvent::SettingsAction { name, arg } => {
                                 match name.as_str() {
@@ -3620,23 +3656,70 @@ fn apply_custom_theme_to_chrome(chrome_webview: &WebView) {
     let _ = chrome_webview.evaluate_script(&script);
 }
 
-/// Pushes the current custom theme's page CSS and wallpaper config into an internal page tab
-/// (the theme editor).
-fn apply_custom_theme_to_tab(tabs: &TabManager, tab_id: usize, reduced_motion: bool) {
-    let Some(webview) = tabs.get_tab(tab_id).and_then(|t| t.webview.as_ref()) else {
-        return;
-    };
-    let css = crate::theme::current().page_css();
+/// Pushes the current custom theme into the chrome and into every open internal `ember://` page
+/// that has a live WebView, so the toolbar, New Tab, Settings, etc. all update together.
+/// Suspended or not-yet-created tabs need nothing: they render with the current theme.
+fn apply_custom_theme_everywhere(
+    chrome_webview: &WebView,
+    tabs: &TabManager,
+    reduced_motion: bool,
+) {
+    apply_custom_theme_to_chrome(chrome_webview);
+    let theme = crate::theme::current();
+    let script = custom_theme_page_script(
+        &theme.page_css(),
+        &crate::theme::page_wallpaper_json(reduced_motion),
+    );
+    tabs.for_each_tab_with_webview(|tab, webview| {
+        if pages::is_internal_url(&tab.url) {
+            let _ = webview.evaluate_script(&script);
+        }
+    });
+}
+
+/// Script that applies page CSS and the page wallpaper config to an internal page. Both hooks
+/// are guarded: every internal page carries the wallpaper runtime (which defines them), but a
+/// page still loading may not have them yet; it renders with the current theme anyway.
+fn custom_theme_page_script(page_css: &str, wallpaper_json: &str) -> String {
     let mut script = String::from(
         "if(typeof window.__emberSetCustomTheme==='function'){window.__emberSetCustomTheme(",
     );
-    push_js_quoted(&mut script, &css);
+    push_js_quoted(&mut script, page_css);
     script.push_str(");}");
-    push_wallpaper_call(
-        &mut script,
-        &crate::theme::page_wallpaper_json(reduced_motion),
-    );
-    let _ = webview.evaluate_script(&script);
+    push_wallpaper_call(&mut script, wallpaper_json);
+    script
+}
+
+/// How often the OS foreground window is checked while an animated wallpaper is set to pause
+/// when Ember is not in front.
+const FOCUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Rate limiter for the foreground-window check done on event loop wake-ups.
+#[derive(Default)]
+struct FocusPoll {
+    last: Option<Instant>,
+}
+
+impl FocusPoll {
+    /// Returns true (and records `now`) when the last check is at least 250 ms old.
+    fn due(&mut self, now: Instant) -> bool {
+        let due = self
+            .last
+            .is_none_or(|t| now.saturating_duration_since(t) >= Duration::from_millis(250));
+        if due {
+            self.last = Some(now);
+        }
+        due
+    }
+}
+
+/// Whether the window counts as focused for wallpaper pausing: a focus event, or (where the OS
+/// can tell) the window or one of its child WebViews being the foreground window.
+fn effective_focus(event_focused: bool, foreground: Option<bool>) -> bool {
+    match foreground {
+        Some(fg) => fg,
+        None => event_focused,
+    }
 }
 
 /// Appends a guarded `window.__emberSetWallpaper(<config>)` call. `config_json` is built by
@@ -3663,7 +3746,7 @@ fn store_window_logical_height(window: &Window) {
     WINDOW_LOGICAL_HEIGHT.store(h.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Tells the chrome (and the active tab when it is an internal page) whether the window is
+/// Tells the chrome and every open internal page whether the window is
 /// focused / minimized, so animated wallpapers, videos and particles pause.
 fn signal_wallpaper_host(
     chrome_webview: &WebView,
@@ -3676,13 +3759,13 @@ fn signal_wallpaper_host(
         "if(typeof window.__emberWallpaperHost==='function'){{window.__emberWallpaperHost({{focused:{focused},minimized:{minimized},winH:{win_h}}});}}"
     );
     let _ = chrome_webview.evaluate_script(&script);
-    if let Some(webview) = tabs
-        .active_tab()
-        .filter(|t| pages::is_internal_url(&t.url))
-        .and_then(|t| t.webview.as_ref())
-    {
-        let _ = webview.evaluate_script(&script);
-    }
+    // Every open internal page gets it (not just the active one), so a page that becomes
+    // active later does not keep a stale "unfocused" state. Hidden pages stay paused anyway.
+    tabs.for_each_tab_with_webview(|tab, webview| {
+        if pages::is_internal_url(&tab.url) {
+            let _ = webview.evaluate_script(&script);
+        }
+    });
 }
 
 /// Reports a wallpaper upload step back to the theme editor
@@ -3831,6 +3914,34 @@ fn build_selftest_report_json(items: &[SelfTestItem]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_focus_poll_rate_limits_checks() {
+        let mut poll = FocusPoll::default();
+        let t0 = Instant::now();
+        assert!(poll.due(t0));
+        assert!(!poll.due(t0 + Duration::from_millis(100)));
+        assert!(poll.due(t0 + Duration::from_millis(300)));
+    }
+
+    #[test]
+    fn test_effective_focus_prefers_foreground_state() {
+        // Focus moved into a child WebView: tao says unfocused, but Ember is still in front.
+        assert!(effective_focus(false, Some(true)));
+        // Another app is in front.
+        assert!(!effective_focus(true, Some(false)));
+        // Platforms that cannot tell fall back to the event.
+        assert!(effective_focus(true, None));
+        assert!(!effective_focus(false, None));
+    }
+
+    #[test]
+    fn test_custom_theme_page_script_sets_css_and_wallpaper() {
+        let script = custom_theme_page_script("body{color:\"red\"}", "{\"active\":true}");
+        assert!(script.contains("typeof window.__emberSetCustomTheme==='function'"));
+        assert!(script.contains("window.__emberSetCustomTheme(\"body{color:\\\"red\\\"}\")"));
+        assert!(script.contains("window.__emberSetWallpaper({\"active\":true})"));
+    }
 
     #[test]
     fn test_parse_selftest_report_extracts_items_and_counts() {

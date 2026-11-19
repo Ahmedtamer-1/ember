@@ -600,6 +600,13 @@ impl CustomTheme {
         bg || particles
     }
 
+    /// Whether an animated wallpaper (chrome or pages) is on and set to pause while Ember is
+    /// not the foreground window, so the host has to keep the focus state accurate.
+    pub fn animates_focus_only(&self) -> bool {
+        (self.wallpaper_active("chrome") || self.wallpaper_active("pages"))
+            && self.get("animate_focus_only") != Some("false")
+    }
+
     /// JSON config for the wallpaper runtime (`window.__emberSetWallpaper`). `video_url` is
     /// the served wallpaper video (see [`wallpaper_video_url`]); `reduced` forces still mode.
     /// Every string in it is a validated theme value or the Rust-built video URL.
@@ -1448,6 +1455,34 @@ mod tests {
             .expect("init");
         assert!(pos < html.find("</body>").expect("body"));
         assert!(html.contains("__emberSetWallpaper"));
+    }
+
+    #[test]
+    fn wallpaper_runtime_defines_live_theme_hooks() {
+        let html = inject_wallpaper_runtime("<html><body>x</body></html>", "{\"active\":false}");
+        assert!(html.contains("window.__emberSetCustomTheme = function"));
+        assert!(html.contains("window.__emberSetWallpaper = function"));
+    }
+
+    #[test]
+    fn animates_focus_only_follows_wallpaper_and_flag() {
+        assert!(!CustomTheme::parse("enabled=true").animates_focus_only());
+        assert!(CustomTheme::parse(
+            "enabled=true
+particles=rain"
+        )
+        .animates_focus_only());
+        assert!(!CustomTheme::parse(
+            "enabled=true
+particles=rain
+animate_focus_only=false"
+        )
+        .animates_focus_only());
+        assert!(!CustomTheme::parse(
+            "enabled=false
+particles=rain"
+        )
+        .animates_focus_only());
     }
 
     #[test]

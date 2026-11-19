@@ -2,6 +2,18 @@
    Idle until window.__emberSetWallpaper() receives an active config. */
 (function () {
   "use strict";
+  // Live theme CSS hook for internal pages (the theme editor defines its own first).
+  if (typeof window.__emberSetCustomTheme !== "function") {
+    window.__emberSetCustomTheme = function (css) {
+      var e = document.getElementById("ember-custom-theme");
+      if (!e) {
+        e = document.createElement("style");
+        e.id = "ember-custom-theme";
+        (document.head || document.documentElement).appendChild(e);
+      }
+      e.textContent = typeof css === "string" ? css : "";
+    };
+  }
   if (window.__emberSetWallpaper) return;
   var doc = document, root = doc.documentElement;
   var cfg = { active: false };
@@ -256,7 +268,8 @@
       syncTimer = 0;
     }
     if (run && P) {
-      if (!running) {
+      // `!raf` also restarts a loop whose frame callback was dropped (e.g. while hidden).
+      if (!running || !raf) {
         running = true;
         lastFrame = 0;
         raf = requestAnimationFrame(frame);
@@ -272,6 +285,8 @@
     if (listening) return;
     listening = true;
     doc.addEventListener("visibilitychange", update);
+    window.addEventListener("pageshow", update);
+    window.addEventListener("focus", update);
     if (mq) {
       if (mq.addEventListener) mq.addEventListener("change", update);
       else if (mq.addListener) mq.addListener(update);

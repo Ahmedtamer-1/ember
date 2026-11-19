@@ -146,6 +146,15 @@ impl TabManager {
         }
     }
 
+    /// Calls `f` for every tab that currently has a live `WebView`, with the tab itself.
+    pub fn for_each_tab_with_webview(&self, mut f: impl FnMut(&Tab, &WebView)) {
+        for tab in &self.tabs {
+            if let Some(webview) = &tab.webview {
+                f(tab, webview);
+            }
+        }
+    }
+
     /// Creates a new tab entry lazily (`webview: None`).
     /// Its WebView is only created when the tab is active and materialized by the application shell.
     pub fn create_tab(&mut self, initial_url: &str, activate: bool) -> usize {
