@@ -12,6 +12,7 @@ pub mod privacy;
 pub mod settings;
 pub mod storage;
 pub mod tabs;
+pub mod theme;
 pub mod ui;
 pub mod zoom;
 

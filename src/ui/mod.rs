@@ -562,6 +562,12 @@ pub enum PageIpcEvent {
     },
     /// `ember://warning`: user chose to continue to an insecure HTTP site.
     HttpsProceed(String),
+    /// `ember://themes`: live-preview a theme (`key=value` lines) without saving it.
+    ThemePreview(String),
+    /// `ember://themes`: apply and persist a theme (`key=value` lines).
+    ThemeSave(String),
+    /// `ember://themes`: discard an unsaved preview and restore the saved theme.
+    ThemeRevert,
     ShortcutNewTab,
     ShortcutCloseTab,
     ShortcutReopenClosedTab,
@@ -665,6 +671,9 @@ pub fn is_privileged_page_event(event: &PageIpcEvent) -> bool {
             | PageIpcEvent::BookmarkRemove(_)
             | PageIpcEvent::HttpsProceed(_)
             | PageIpcEvent::InternalNavigate(_)
+            | PageIpcEvent::ThemePreview(_)
+            | PageIpcEvent::ThemeSave(_)
+            | PageIpcEvent::ThemeRevert
     )
 }
 
@@ -871,6 +880,12 @@ fn parse_page_ipc_body(raw: &str) -> Option<PageIpcEvent> {
                     name: name.trim().to_owned(),
                     arg: arg.trim().to_owned(),
                 })
+            } else if let Some(payload) = trimmed.strip_prefix("theme_preview:") {
+                Some(PageIpcEvent::ThemePreview(payload.to_owned()))
+            } else if let Some(payload) = trimmed.strip_prefix("theme_save:") {
+                Some(PageIpcEvent::ThemeSave(payload.to_owned()))
+            } else if trimmed == "theme_revert" {
+                Some(PageIpcEvent::ThemeRevert)
             } else if let Some(target) = trimmed.strip_prefix("https_proceed:") {
                 Some(PageIpcEvent::HttpsProceed(target.trim().to_owned()))
             } else if let Some(url) = trimmed.strip_prefix("cosmetic_init:") {
@@ -2365,5 +2380,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn theme_ipc_is_privileged() {
+        assert_eq!(parse_page_ipc_event("theme_save:enabled=true"), None);
+        assert_eq!(parse_page_ipc_event("theme_preview:accent=#fff"), None);
+        assert_eq!(parse_page_ipc_event("theme_revert"), None);
+        let tok = internal_ipc_token();
+        let raw = format!(
+            "{INTERNAL_IPC_PREFIX}{tok}:theme_save:enabled=true
+accent=#ff0000"
+        );
+        assert_eq!(
+            parse_page_ipc_event_checked(&raw, tok, Some("ember://themes"), "about:blank"),
+            Some(PageIpcEvent::ThemeSave(String::from(
+                "enabled=true
+accent=#ff0000"
+            )))
+        );
+        assert_eq!(
+            parse_page_ipc_event_checked(
+                &raw,
+                tok,
+                Some("https://evil.example"),
+                "https://evil.example"
+            ),
+            None
+        );
     }
 }

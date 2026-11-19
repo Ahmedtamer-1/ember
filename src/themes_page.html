@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Themes</title>
+<style>/*__SHARED_CSS__*/
+.page-wrap { max-width: 980px; }
+.toolbar-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.master { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; }
+.master-title { font-size: 16px; font-weight: 600; }
+.presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.preset { border: 2px solid var(--border); border-radius: 12px; overflow: hidden; cursor: pointer; background: var(--surface); transition: transform .12s ease, border-color .12s ease; text-align: left; padding: 0; color: var(--text); font: inherit; }
+.preset:hover { transform: translateY(-2px); border-color: var(--accent); }
+.preset .sw { height: 64px; position: relative; }
+.preset .sw .bar { position: absolute; left: 8px; right: 8px; bottom: 8px; height: 14px; border-radius: 7px; }
+.preset .sw .dot { position: absolute; left: 14px; top: 12px; width: 18px; height: 18px; border-radius: 50%; box-shadow: 0 0 0 2px rgba(255,255,255,.5); }
+.preset .nm { padding: 8px 10px; font-size: 12px; font-weight: 600; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0 18px; }
+.trow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 16px; border-bottom: 1px solid var(--border); min-height: 46px; }
+.trow:last-child { border-bottom: none; }
+.trow label { font-size: 13px; }
+.trow .hint { font-size: 11px; color: var(--muted); }
+.color-ctl { display: flex; align-items: center; gap: 6px; }
+.color-ctl input[type=color] { width: 34px; height: 28px; border: 1px solid var(--border); border-radius: 6px; padding: 0; background: none; cursor: pointer; }
+.color-ctl input[type=text] { width: 150px; height: 28px; font-size: 12px; font-family: ui-monospace, Consolas, monospace; padding: 0 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+.color-ctl input[type=text].bad { border-color: var(--danger); }
+.clear-btn { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 0 2px; }
+.clear-btn:hover { color: var(--danger); }
+.range-ctl { display: flex; align-items: center; gap: 8px; }
+.range-ctl input[type=range] { width: 160px; accent-color: var(--accent); }
+.range-ctl .val { width: 44px; text-align: right; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: none; background: var(--surface); color: var(--text); padding: 6px 11px; font: inherit; font-size: 12px; cursor: pointer; border-right: 1px solid var(--border); }
+.seg button:last-child { border-right: none; }
+.seg button.on { background: var(--accent); color: #fff; }
+.img-drop { display: flex; align-items: center; gap: 10px; }
+.img-thumb { width: 72px; height: 44px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-hover) center/cover no-repeat; }
+.tabs-nav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.tabs-nav button { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 7px 14px; font: inherit; font-size: 13px; cursor: pointer; }
+.tabs-nav button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.panel { display: none; }
+.panel.on { display: block; }
+.json-box { width: 100%; min-height: 160px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); padding: 10px; resize: vertical; user-select: text; }
+#toast { position: fixed; bottom: 22px; right: 24px; padding: 9px 14px; border-radius: 8px; background: var(--text); color: var(--bg); font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 10; }
+#toast.show { opacity: 1; }
+.off-note { color: var(--muted); font-size: 12px; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="page-wrap">
+  <div class="page-header">
+    <h1>Themes</h1>
+    <div class="nav-links">
+      <button class="pill-btn" onclick="emberSend('settings_action:open:ember://settings')">&#9881; Settings</button>
+      <button class="pill-btn" onclick="emberSend('settings_action:open:ember://newtab')">New Tab</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="card master">
+      <div>
+        <div class="master-title">Custom theme</div>
+        <div class="off-note" id="master-note">Changes preview live in the toolbar and are saved automatically.</div>
+      </div>
+      <div class="toolbar-row">
+        <button class="btn" onclick="randomize()" title="Generate a random theme">&#127922; Surprise me</button>
+        <button class="btn" onclick="resetAll()">Reset</button>
+        <input class="switch" type="checkbox" id="enabled" onchange="setKey('enabled', this.checked ? 'true' : 'false', true)">
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Presets</h2>
+    <div class="presets" id="presets"></div>
+  </div>
+
+  <div class="tabs-nav" id="tabs-nav">
+    <button data-p="colors" class="on">Colors</button>
+    <button data-p="pages">Page colors</button>
+    <button data-p="shape">Shape &amp; layout</button>
+    <button data-p="type">Typography</button>
+    <button data-p="bg">Background</button>
+    <button data-p="effects">Effects</button>
+    <button data-p="share">Import / Export</button>
+  </div>
+
+  <div class="panel on" id="p-colors"><div class="card grid2" id="colors-grid"></div></div>
+  <div class="panel" id="p-pages"><div class="card grid2" id="pages-grid"></div></div>
+  <div class="panel" id="p-shape"><div class="card" id="shape-box"></div></div>
+  <div class="panel" id="p-type"><div class="card" id="type-box"></div></div>
+  <div class="panel" id="p-bg"><div class="card" id="bg-box"></div></div>
+  <div class="panel" id="p-effects"><div class="card" id="fx-box"></div></div>
+  <div class="panel" id="p-share">
+    <div class="card" style="padding:16px 20px;">
+      <div class="toolbar-row" style="margin-bottom:10px;">
+        <button class="btn primary" onclick="exportFile()">Export file</button>
+        <button class="btn" onclick="copyJson()">Copy JSON</button>
+        <button class="btn" onclick="document.getElementById('import-file').click()">Import file</button>
+        <button class="btn" onclick="importText()">Apply JSON below</button>
+        <input type="file" id="import-file" accept=".json,application/json" style="display:none" onchange="importFile(this)">
+      </div>
+      <textarea class="json-box" id="json-box" spellcheck="false" placeholder="Paste a theme JSON here, or press Copy JSON to see the current one."></textarea>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+<script>
+/*__IPC_JS__*/
+var THEME = /*__THEME_JSON__*/;
+
+var CHROME_COLORS = [
+  ["accent", "Accent"], ["tab_strip_bg", "Tab strip"], ["tab_active_bg", "Active tab"],
+  ["tab_hover_bg", "Hovered tab"], ["tab_inactive_bg", "Inactive tab"], ["toolbar_bg", "Toolbar"],
+  ["toolbar_border", "Toolbar border"], ["omnibox_bg", "Address bar"], ["omnibox_focus_bg", "Address bar (focused)"],
+  ["text_primary", "Text"], ["text_secondary", "Secondary text & icons"], ["btn_hover", "Button hover"],
+  ["btn_active", "Button pressed"], ["divider", "Dividers"], ["dropdown_bg", "Menus & popups"],
+  ["dropdown_border", "Menu border"], ["badge_on_bg", "Shield on (bg)"], ["badge_on_text", "Shield on (text)"],
+  ["badge_off_bg", "Shield off (bg)"], ["badge_off_text", "Shield off (text)"]
+];
+var PAGE_COLORS = [
+  ["page_bg", "Background"], ["page_surface", "Cards"], ["page_surface_hover", "Card hover"],
+  ["page_border", "Borders"], ["page_text", "Text"], ["page_muted", "Muted text"],
+  ["page_accent", "Accent (blank = chrome accent)"], ["page_accent_hover", "Accent hover"]
+];
+
+var PRESETS = [
+  { name: "Ember Default", v: {} },
+  { name: "Midnight Neon", v: { mode: "dark", accent: "#ff2bd6", tab_strip_bg: "#0b0b1a", tab_active_bg: "#1b1340", toolbar_bg: "#1b1340", toolbar_border: "#2e1f66", omnibox_bg: "#0f0a26", omnibox_focus_bg: "#0f0a26", text_primary: "#f3e9ff", text_secondary: "#a99bd6", dropdown_bg: "#160f33", dropdown_border: "#3a2a80", divider: "rgba(255,43,214,0.25)", page_bg: "#0b0b1a", page_surface: "#160f33", page_surface_hover: "#22184d", page_border: "#2e1f66", page_text: "#f3e9ff", page_muted: "#a99bd6", active_glow: "true", glow_color: "#ff2bd6", tab_style: "pill", radius_tab: "14", bg_mode: "gradient", gradient_kind: "linear", gradient_angle: "120", gradient_from: "#2a0a5e", gradient_via: "#7b1fa2", gradient_to: "#ff2bd6", bg_strength: "55", bg_target: "both" } },
+  { name: "Arctic", v: { mode: "light", accent: "#5e81ac", tab_strip_bg: "#d8dee9", tab_active_bg: "#eceff4", toolbar_bg: "#eceff4", toolbar_border: "#cdd5e0", omnibox_bg: "#e5e9f0", omnibox_focus_bg: "#ffffff", text_primary: "#2e3440", text_secondary: "#4c566a", page_bg: "#eceff4", page_surface: "#ffffff", page_border: "#d8dee9", page_text: "#2e3440", page_muted: "#4c566a", radius_tab: "10", radius_omnibox: "10" } },
+  { name: "Forest", v: { mode: "dark", accent: "#7bd88f", tab_strip_bg: "#14201a", tab_active_bg: "#1f3328", toolbar_bg: "#1f3328", toolbar_border: "#2b4536", omnibox_bg: "#14201a", omnibox_focus_bg: "#14201a", text_primary: "#e4f2e7", text_secondary: "#9cbfa6", dropdown_bg: "#1a2a21", dropdown_border: "#2b4536", page_bg: "#101a15", page_surface: "#1a2a21", page_surface_hover: "#22382c", page_border: "#2b4536", page_text: "#e4f2e7", page_muted: "#9cbfa6", font_ui: "Georgia, serif" } },
+  { name: "Sakura", v: { mode: "light", accent: "#e05a8a", tab_strip_bg: "#fde4ec", tab_active_bg: "#fff7fa", toolbar_bg: "#fff7fa", toolbar_border: "#f6cad9", omnibox_bg: "#fdeef3", omnibox_focus_bg: "#ffffff", text_primary: "#4a2533", text_secondary: "#8a5468", page_bg: "#fff4f8", page_surface: "#ffffff", page_border: "#f6cad9", page_text: "#4a2533", page_muted: "#8a5468", tab_style: "pill", radius_tab: "16", radius_omnibox: "18", bg_mode: "gradient", gradient_kind: "radial", gradient_from: "#ffd1e1", gradient_to: "#fff7fa", bg_strength: "45", bg_target: "pages" } },
+  { name: "Solar Flare", v: { mode: "dark", accent: "#ffb000", tab_strip_bg: "#1c1206", tab_active_bg: "#2d1d0a", toolbar_bg: "#2d1d0a", toolbar_border: "#4a2f0f", omnibox_bg: "#1c1206", omnibox_focus_bg: "#1c1206", text_primary: "#fff1d6", text_secondary: "#d6a964", page_bg: "#140d04", page_surface: "#2d1d0a", page_border: "#4a2f0f", page_text: "#fff1d6", page_muted: "#d6a964", active_glow: "true", glow_color: "#ff6a00", bg_mode: "gradient", gradient_kind: "conic", gradient_angle: "200", gradient_from: "#ff6a00", gradient_via: "#ffb000", gradient_to: "#ff2d55", bg_strength: "40", bg_target: "chrome" } },
+  { name: "Terminal", v: { mode: "dark", accent: "#39ff14", tab_strip_bg: "#000000", tab_active_bg: "#0a140a", toolbar_bg: "#0a140a", toolbar_border: "#1f3d1f", omnibox_bg: "#000000", omnibox_focus_bg: "#000000", text_primary: "#39ff14", text_secondary: "#22a80c", dropdown_bg: "#050a05", dropdown_border: "#1f3d1f", divider: "rgba(57,255,20,0.25)", page_bg: "#000000", page_surface: "#0a140a", page_border: "#1f3d1f", page_text: "#39ff14", page_muted: "#22a80c", font_ui: "Consolas, \"Cascadia Mono\", monospace", tab_style: "flat", radius_tab: "0", radius_omnibox: "0", radius_button: "0", radius_menu: "0" } },
+  { name: "Mono Minimal", v: { mode: "light", accent: "#111111", tab_strip_bg: "#ffffff", tab_active_bg: "#ffffff", toolbar_bg: "#ffffff", toolbar_border: "#e6e6e6", omnibox_bg: "#f4f4f4", omnibox_focus_bg: "#ffffff", text_primary: "#111111", text_secondary: "#666666", page_bg: "#ffffff", page_surface: "#fafafa", page_border: "#e6e6e6", page_text: "#111111", page_muted: "#666666", tab_style: "underline", anim_scale: "0.6" } },
+  { name: "Ocean Glass", v: { mode: "dark", accent: "#4dd0e1", text_primary: "#e0f7fa", text_secondary: "#9fd3db", tab_active_bg: "rgba(255,255,255,0.14)", omnibox_bg: "rgba(0,0,0,0.25)", omnibox_focus_bg: "rgba(0,0,0,0.35)", page_surface: "rgba(255,255,255,0.08)", page_border: "rgba(255,255,255,0.15)", page_text: "#e0f7fa", page_muted: "#9fd3db", tab_style: "pill", radius_tab: "12", bg_mode: "gradient", gradient_kind: "linear", gradient_angle: "160", gradient_from: "#003b5c", gradient_via: "#00796b", gradient_to: "#26c6da", bg_strength: "80", page_blur: "0", bg_target: "both" } }
+];
+
+var state = {};
+var previewTimer = null, saveTimer = null;
+
+function payload() {
+  var lines = [];
+  Object.keys(state).forEach(function (k) {
+    var v = String(state[k]).replace(/[\r\n]/g, "");
+    if (v !== "") lines.push(k + "=" + v);
+  });
+  return lines.join("\n");
+}
+function sendPreview() {
+  if (previewTimer) return;
+  previewTimer = setTimeout(function () { previewTimer = null; emberSend("theme_preview:" + payload()); }, 40);
+}
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(function () { emberSend("theme_save:" + payload()); toast("Theme saved"); }, 350);
+}
+function setKey(k, v, save) {
+  if (v === "" || v === null || v === undefined) delete state[k]; else state[k] = String(v);
+  if (k === "mode" && v) emberSend("settings_set:theme=" + v);
+  if (k !== "enabled" && state.enabled !== "true") { state.enabled = "true"; syncMaster(); }
+  sendPreview();
+  if (save) scheduleSave();
+}
+function toast(msg) {
+  var t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(function () { t.classList.remove("show"); }, 1300);
+}
+function syncMaster() {
+  document.getElementById("enabled").checked = state.enabled === "true";
+  document.getElementById("master-note").textContent = state.enabled === "true"
+    ? "Changes preview live in the toolbar and are saved automatically."
+    : "Off: Ember uses its built-in light/dark look. Editing anything turns it on.";
+}
+
+/* ---------- control builders ---------- */
+function el(tag, attrs, html) {
+  var e = document.createElement(tag);
+  if (attrs) Object.keys(attrs).forEach(function (a) { e.setAttribute(a, attrs[a]); });
+  if (html !== undefined) e.innerHTML = html;
+  return e;
+}
+function row(label, hint, ctl) {
+  var r = el("div", { "class": "trow" });
+  var l = el("div");
+  var lab = el("label"); lab.textContent = label; l.appendChild(lab);
+  if (hint) { var h = el("div", { "class": "hint" }); h.textContent = hint; l.appendChild(h); }
+  r.appendChild(l); r.appendChild(ctl);
+  return r;
+}
+function toHex6(v) {
+  if (!v) return "#000000";
+  v = String(v).trim();
+  if (/^#[0-9a-f]{6}$/i.test(v)) return v;
+  if (/^#[0-9a-f]{8}$/i.test(v)) return v.slice(0, 7);
+  if (/^#[0-9a-f]{3,4}$/i.test(v)) return "#" + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
+  var c = document.createElement("canvas").getContext("2d");
+  c.fillStyle = "#000"; c.fillStyle = v;
+  var out = c.fillStyle;
+  if (/^#[0-9a-f]{6}$/i.test(out)) return out;
+  var m = out.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (m) return "#" + [m[1], m[2], m[3]].map(function (n) { return (+n).toString(16).padStart(2, "0"); }).join("");
+  return "#000000";
+}
+function validColor(v) {
+  return /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v) || /^(rgba?|hsla?)\([0-9.,%\/ -]+\)$/i.test(v) || /^transparent$/i.test(v);
+}
+var refreshers = [];
+function colorCtl(key) {
+  var box = el("div", { "class": "color-ctl" });
+  var pick = el("input", { type: "color" });
+  var txt = el("input", { type: "text", spellcheck: "false", placeholder: "default" });
+  var clr = el("button", { "class": "clear-btn", title: "Use default" }, "&#215;");
+  function refresh() { txt.value = state[key] || ""; pick.value = toHex6(state[key] || getDefault(key)); txt.classList.remove("bad"); }
+  pick.addEventListener("input", function () { txt.value = pick.value; setKey(key, pick.value, false); });
+  pick.addEventListener("change", function () { setKey(key, pick.value, true); });
+  txt.addEventListener("change", function () {
+    var v = txt.value.trim();
+    if (v === "" ) { setKey(key, "", true); refresh(); return; }
+    if (!validColor(v)) { txt.classList.add("bad"); return; }
+    txt.classList.remove("bad"); pick.value = toHex6(v); setKey(key, v, true);
+  });
+  clr.addEventListener("click", function () { setKey(key, "", true); refresh(); });
+  box.appendChild(pick); box.appendChild(txt); box.appendChild(clr);
+  refreshers.push(refresh); refresh();
+  return box;
+}
+function getDefault(key) {
+  var map = { accent: "--accent", tab_strip_bg: "--tab-strip-bg", text_primary: "--text", page_bg: "--bg", page_surface: "--surface", page_text: "--text", page_accent: "--accent" };
+  var v = map[key] ? getComputedStyle(document.documentElement).getPropertyValue(map[key]).trim() : "";
+  return v || "#888888";
+}
+function rangeCtl(key, min, max, step, def, unit) {
+  var box = el("div", { "class": "range-ctl" });
+  var r = el("input", { type: "range", min: min, max: max, step: step });
+  var val = el("span", { "class": "val" });
+  var clr = el("button", { "class": "clear-btn", title: "Use default" }, "&#215;");
+  function refresh() { var v = state[key] !== undefined ? state[key] : def; r.value = v; val.textContent = v + (unit || ""); val.style.opacity = state[key] !== undefined ? 1 : 0.5; }
+  r.addEventListener("input", function () { setKey(key, r.value, false); refresh(); });
+  r.addEventListener("change", function () { setKey(key, r.value, true); });
+  clr.addEventListener("click", function () { setKey(key, "", true); refresh(); });
+  box.appendChild(r); box.appendChild(val); box.appendChild(clr);
+  refreshers.push(refresh); refresh();
+  return box;
+}
+function segCtl(key, options, def) {
+  var box = el("div", { "class": "seg" });
+  var btns = options.map(function (o) {
+    var b = el("button"); b.textContent = o[1];
+    b.addEventListener("click", function () { setKey(key, o[0], true); refresh(); });
+    box.appendChild(b); return [o[0], b];
+  });
+  function refresh() { var cur = state[key] || def; btns.forEach(function (p) { p[1].classList.toggle("on", p[0] === cur); }); }
+  refreshers.push(refresh); refresh();
+  return box;
+}
+function switchCtl(key) {
+  var c = el("input", { type: "checkbox", "class": "switch" });
+  c.addEventListener("change", function () { setKey(key, c.checked ? "true" : "false", true); });
+  refreshers.push(function () { c.checked = state[key] === "true"; });
+  c.checked = state[key] === "true";
+  return c;
+}
+var FONTS = [
+  ["", "Default (Segoe UI)"], ["\"Segoe UI Variable Display\", \"Segoe UI\", sans-serif", "Segoe UI Display"],
+  ["Inter, \"Segoe UI\", sans-serif", "Inter"], ["Arial, Helvetica, sans-serif", "Arial"],
+  ["Verdana, sans-serif", "Verdana"], ["\"Trebuchet MS\", sans-serif", "Trebuchet"],
+  ["Georgia, serif", "Georgia"], ["\"Times New Roman\", serif", "Times"],
+  ["\"Comic Sans MS\", cursive", "Comic Sans"], ["Impact, sans-serif", "Impact"],
+  ["Consolas, \"Cascadia Mono\", monospace", "Consolas"], ["\"Cascadia Code\", Consolas, monospace", "Cascadia Code"]
+];
+function fontCtl() {
+  var box = el("div", { "class": "color-ctl" });
+  var sel = el("select", { "class": "ctl" }); sel.style.minWidth = "150px";
+  FONTS.forEach(function (f) { var o = el("option"); o.value = f[0]; o.textContent = f[1]; sel.appendChild(o); });
+  var custom = el("option"); custom.value = "__custom"; custom.textContent = "Custom…"; sel.appendChild(custom);
+  var txt = el("input", { type: "text", spellcheck: "false", placeholder: "Font family list" });
+  function refresh() {
+    var v = state.font_ui || "";
+    var known = FONTS.some(function (f) { return f[0] === v; });
+    sel.value = known ? v : "__custom"; txt.value = v; txt.style.display = known ? "none" : "";
+  }
+  sel.addEventListener("change", function () {
+    if (sel.value === "__custom") { txt.style.display = ""; txt.focus(); return; }
+    setKey("font_ui", sel.value, true); refresh();
+  });
+  txt.addEventListener("change", function () {
+    if (!/^[A-Za-z0-9 ,\-_"'.]{1,120}$/.test(txt.value.trim())) { txt.classList.add("bad"); return; }
+    txt.classList.remove("bad"); setKey("font_ui", txt.value.trim(), true);
+  });
+  box.appendChild(sel); box.appendChild(txt);
+  refreshers.push(refresh); refresh();
+  return box;
+}
+function imageCtl() {
+  var box = el("div", { "class": "img-drop" });
+  var thumb = el("div", { "class": "img-thumb" });
+  var file = el("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif,image/avif" }); file.style.display = "none";
+  var pick = el("button", { "class": "btn" }, "Choose image…");
+  var clr = el("button", { "class": "clear-btn", title: "Remove image" }, "&#215;");
+  pick.addEventListener("click", function () { file.click(); });
+  file.addEventListener("change", function () {
+    var f = file.files && file.files[0]; if (!f) return;
+    if (f.size > 4 * 1024 * 1024) { toast("Image too large (max 4 MB)"); return; }
+    var rd = new FileReader();
+    rd.onload = function () {
+      var url = String(rd.result).replace(/^data:image\/jpg;/, "data:image/jpeg;");
+      if (!/^data:image\/(png|jpeg|webp|gif|avif);base64,/.test(url)) { toast("Unsupported image type"); return; }
+      state.bg_mode = "image";
+      setKey("image", url, true); refreshAll();
+    };
+    rd.readAsDataURL(f); file.value = "";
+  });
+  clr.addEventListener("click", function () { setKey("image", "", true); refreshAll(); });
+  function refresh() { thumb.style.backgroundImage = state.image ? "url(\"" + state.image + "\")" : "none"; }
+  box.appendChild(thumb); box.appendChild(pick); box.appendChild(clr); box.appendChild(file);
+  refreshers.push(refresh); refresh();
+  return box;
+}
+
+/* ---------- build UI ---------- */
+function build() {
+  var cg = document.getElementById("colors-grid");
+  CHROME_COLORS.forEach(function (c) { cg.appendChild(row(c[1], null, colorCtl(c[0]))); });
+  var pg = document.getElementById("pages-grid");
+  PAGE_COLORS.forEach(function (c) { pg.appendChild(row(c[1], null, colorCtl(c[0]))); });
+
+  var sh = document.getElementById("shape-box");
+  sh.appendChild(row("Light / dark base", "Also switches the window frame and web content.", segCtl("mode", [["system", "System"], ["light", "Light"], ["dark", "Dark"]], "system")));
+  sh.appendChild(row("Tab style", null, segCtl("tab_style", [["classic", "Classic"], ["pill", "Pill"], ["underline", "Underline"], ["flat", "Flat"]], "classic")));
+  sh.appendChild(row("Tab corner radius", null, rangeCtl("radius_tab", 0, 20, 1, 8, "px")));
+  sh.appendChild(row("Max tab width", null, rangeCtl("tab_max_width", 100, 400, 5, 240, "px")));
+  sh.appendChild(row("Address bar radius", null, rangeCtl("radius_omnibox", 0, 20, 1, 16, "px")));
+  sh.appendChild(row("Button radius", "Back/forward/reload and address bar icons.", rangeCtl("radius_button", 0, 16, 1, 16, "px")));
+  sh.appendChild(row("Menu radius", null, rangeCtl("radius_menu", 0, 24, 1, 12, "px")));
+
+  var ty = document.getElementById("type-box");
+  ty.appendChild(row("Interface font", "Toolbar, tabs, menus and internal pages.", fontCtl()));
+  ty.appendChild(row("Tab text size", null, rangeCtl("font_size_tab", 9, 18, 0.5, 12, "px")));
+  ty.appendChild(row("Address bar text size", null, rangeCtl("font_size_omnibox", 10, 20, 0.5, 14, "px")));
+  ty.appendChild(row("Menu text size", null, rangeCtl("font_size_menu", 10, 18, 0.5, 13, "px")));
+  ty.appendChild(row("Font weight", null, rangeCtl("font_weight", 300, 700, 100, 400, "")));
+
+  var bg = document.getElementById("bg-box");
+  bg.appendChild(row("Background", null, segCtl("bg_mode", [["none", "None"], ["gradient", "Gradient"], ["image", "Image"]], "none")));
+  bg.appendChild(row("Show on", null, segCtl("bg_target", [["both", "Toolbar + pages"], ["chrome", "Toolbar"], ["pages", "Pages"]], "both")));
+  bg.appendChild(row("Gradient type", null, segCtl("gradient_kind", [["linear", "Linear"], ["radial", "Radial"], ["conic", "Conic"]], "linear")));
+  bg.appendChild(row("Gradient angle", null, rangeCtl("gradient_angle", 0, 360, 5, 135, "°")));
+  bg.appendChild(row("Gradient start", null, colorCtl("gradient_from")));
+  bg.appendChild(row("Gradient middle", "Optional", colorCtl("gradient_via")));
+  bg.appendChild(row("Gradient end", null, colorCtl("gradient_to")));
+  bg.appendChild(row("Image", "PNG, JPEG, WebP, GIF or AVIF up to 4 MB.", imageCtl()));
+  bg.appendChild(row("Image fit", null, segCtl("image_fit", [["cover", "Fill"], ["contain", "Fit"], ["tile", "Tile"]], "cover")));
+  bg.appendChild(row("Background strength", "How much the background shows through the toolbar and pages.", rangeCtl("bg_strength", 0, 100, 1, 60, "%")));
+  bg.appendChild(row("Page background blur", null, rangeCtl("page_blur", 0, 30, 1, 0, "px")));
+
+  var fx = document.getElementById("fx-box");
+  fx.appendChild(row("Glow on active tab & address bar", null, switchCtl("active_glow")));
+  fx.appendChild(row("Glow color", "Blank uses the accent color.", colorCtl("glow_color")));
+  fx.appendChild(row("Animation speed", "0 = instant, 1 = normal, 3 = slow-mo.", rangeCtl("anim_scale", 0, 3, 0.1, 1, "×")));
+
+  var ps = document.getElementById("presets");
+  PRESETS.forEach(function (p) {
+    var b = el("button", { "class": "preset" });
+    var v = p.v;
+    var swBg = v.bg_mode === "gradient"
+      ? "linear-gradient(135deg," + [v.gradient_from, v.gradient_via, v.gradient_to].filter(Boolean).join(",") + ")"
+      : (v.tab_strip_bg || "#dee1e6");
+    b.innerHTML = '<div class="sw"><div class="dot"></div><div class="bar"></div></div><div class="nm"></div>';
+    b.querySelector(".sw").style.background = swBg;
+    b.querySelector(".dot").style.background = v.accent || "#0067c0";
+    b.querySelector(".bar").style.background = v.toolbar_bg || v.tab_active_bg || "#ffffff";
+    b.querySelector(".nm").textContent = p.name;
+    b.addEventListener("click", function () { applyPreset(p); });
+    ps.appendChild(b);
+  });
+
+  document.querySelectorAll("#tabs-nav button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      document.querySelectorAll("#tabs-nav button").forEach(function (x) { x.classList.toggle("on", x === b); });
+      document.querySelectorAll(".panel").forEach(function (p) { p.classList.toggle("on", p.id === "p-" + b.dataset.p); });
+    });
+  });
+}
+function refreshAll() { refreshers.forEach(function (f) { f(); }); syncMaster(); }
+function replaceState(v, enable) {
+  var img = state.image;
+  state = {};
+  Object.keys(v).forEach(function (k) { state[k] = String(v[k]); });
+  if (img && state.bg_mode === "image" && !state.image) state.image = img;
+  if (enable) state.enabled = "true";
+  if (state.mode) emberSend("settings_set:theme=" + state.mode);
+  refreshAll(); sendPreview(); scheduleSave();
+}
+function applyPreset(p) {
+  if (!Object.keys(p.v).length) { replaceState({ enabled: "false" }, false); emberSend("settings_set:theme=system"); toast("Back to Ember default"); return; }
+  replaceState(Object.assign({ name: p.name }, p.v), true);
+  toast(p.name + " applied");
+}
+function resetAll() {
+  if (!confirm("Reset the custom theme to Ember's default look?")) return;
+  replaceState({ enabled: "false" }, false);
+}
+
+/* ---------- random ---------- */
+function hsl(h, s, l) { return "hsl(" + Math.round(h) + " " + Math.round(s) + "% " + Math.round(l) + "%)"; }
+function randomize() {
+  var h = Math.random() * 360, dark = Math.random() < 0.6, h2 = (h + 30 + Math.random() * 120) % 360;
+  var L = dark ? function (x) { return x; } : function (x) { return 100 - x; };
+  var styles = ["classic", "pill", "underline", "flat"], kinds = ["linear", "radial", "conic"];
+  var v = {
+    name: "Surprise", mode: dark ? "dark" : "light",
+    accent: hsl(h2, 85, dark ? 62 : 45),
+    tab_strip_bg: hsl(h, 30, L(9)), tab_active_bg: hsl(h, 28, L(18)), toolbar_bg: hsl(h, 28, L(18)),
+    toolbar_border: hsl(h, 25, L(26)), omnibox_bg: hsl(h, 30, L(11)), omnibox_focus_bg: hsl(h, 30, L(11)),
+    text_primary: hsl(h, 30, L(94)), text_secondary: hsl(h, 18, L(68)),
+    dropdown_bg: hsl(h, 28, L(14)), dropdown_border: hsl(h, 25, L(28)),
+    page_bg: hsl(h, 30, L(8)), page_surface: hsl(h, 28, L(14)), page_surface_hover: hsl(h, 28, L(20)),
+    page_border: hsl(h, 25, L(24)), page_text: hsl(h, 30, L(94)), page_muted: hsl(h, 18, L(66)),
+    tab_style: styles[Math.floor(Math.random() * styles.length)],
+    radius_tab: String(Math.round(Math.random() * 16)), radius_omnibox: String(Math.round(Math.random() * 20)),
+    active_glow: Math.random() < 0.4 ? "true" : "false"
+  };
+  if (Math.random() < 0.7) {
+    v.bg_mode = "gradient"; v.gradient_kind = kinds[Math.floor(Math.random() * 3)];
+    v.gradient_angle = String(Math.round(Math.random() * 72) * 5);
+    v.gradient_from = hsl(h, 70, dark ? 25 : 80); v.gradient_via = hsl(h2, 75, dark ? 40 : 70); v.gradient_to = hsl((h2 + 60) % 360, 70, dark ? 30 : 85);
+    v.bg_strength = String(35 + Math.round(Math.random() * 40)); v.bg_target = "both";
+  }
+  replaceState(v, true);
+  toast("Surprise!");
+}
+
+/* ---------- import / export ---------- */
+function themeJson() {
+  var o = { ember_theme: 1 };
+  Object.keys(state).forEach(function (k) { o[k] = state[k]; });
+  return JSON.stringify(o, null, 2);
+}
+function exportFile() {
+  var name = (state.name || "ember-theme").replace(/[^A-Za-z0-9_-]+/g, "-").toLowerCase();
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([themeJson()], { type: "application/json" }));
+  a.download = name + ".json";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+  toast("Exported to Downloads");
+}
+function copyJson() {
+  var box = document.getElementById("json-box");
+  box.value = themeJson();
+  box.select();
+  var ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) {}
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(box.value).then(function () { toast("Copied"); }, function () { toast(ok ? "Copied" : "Select and copy the text below"); });
+  else toast(ok ? "Copied" : "Select and copy the text below");
+}
+function applyJson(text) {
+  var o;
+  try { o = JSON.parse(text); } catch (e) { toast("That is not valid JSON"); return; }
+  if (!o || typeof o !== "object" || Array.isArray(o)) { toast("Not a theme file"); return; }
+  var v = {};
+  Object.keys(o).forEach(function (k) {
+    if (k === "ember_theme") return;
+    if (/^[a-z_]{1,32}$/.test(k) && (typeof o[k] === "string" || typeof o[k] === "number" || typeof o[k] === "boolean")) v[k] = String(o[k]);
+  });
+  replaceState(v, v.enabled !== "false");
+  toast("Theme imported");
+}
+function importText() { applyJson(document.getElementById("json-box").value); }
+function importFile(inp) {
+  var f = inp.files && inp.files[0]; if (!f) return;
+  if (f.size > 8 * 1024 * 1024) { toast("File too large"); return; }
+  var rd = new FileReader();
+  rd.onload = function () { applyJson(String(rd.result)); };
+  rd.readAsText(f); inp.value = "";
+}
+
+window.__emberSetCustomTheme = function (css) {
+  var e = document.getElementById("ember-custom-theme");
+  if (!e) { e = document.createElement("style"); e.id = "ember-custom-theme"; document.head.appendChild(e); }
+  e.textContent = typeof css === "string" ? css : "";
+};
+state = THEME || {};
+build();
+refreshAll();
+</script>
+</body>
+</html>

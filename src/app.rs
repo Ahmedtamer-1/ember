@@ -726,6 +726,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         Some(dir) => SettingsStore::with_config_dir(dir.clone())?,
         None => SettingsStore::init()?,
     };
+    if let Some(config_dir) = settings.config_path().parent() {
+        crate::theme::init(config_dir);
+    }
     let init_settings = settings.get();
     let adblocker = Adblocker::with_filters_dir(
         storage.filters_dir(),
@@ -766,7 +769,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .with_transparent(true)
         .with_hotkeys_zoom(false)
         .with_devtools(cfg!(debug_assertions))
-        .with_html(ui::CHROME_HTML)
+        .with_html(crate::theme::inject_style(
+            ui::CHROME_HTML,
+            &crate::theme::current().chrome_css(),
+        ))
         .with_ipc_handler(move |request| {
             let _ = ipc_proxy.send_event(AppEvent::UiIpc(request.body().clone()));
         })
@@ -2702,6 +2708,24 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                     &downloads,
                                 );
                             }
+                            PageIpcEvent::ThemePreview(payload) => {
+                                crate::theme::set_current(crate::theme::parse_payload(&payload));
+                                apply_custom_theme_to_chrome(&chrome_webview);
+                                apply_custom_theme_to_tab(&tabs, tab_id);
+                            }
+                            PageIpcEvent::ThemeSave(payload) => {
+                                let theme = crate::theme::parse_payload(&payload);
+                                if let Err(err) = crate::theme::save(theme) {
+                                    eprintln!("[ember][theme] failed to save theme: {err}");
+                                }
+                                apply_custom_theme_to_chrome(&chrome_webview);
+                                apply_custom_theme_to_tab(&tabs, tab_id);
+                            }
+                            PageIpcEvent::ThemeRevert => {
+                                crate::theme::reload_saved();
+                                apply_custom_theme_to_chrome(&chrome_webview);
+                                apply_custom_theme_to_tab(&tabs, tab_id);
+                            }
                             PageIpcEvent::SettingsAction { name, arg } => {
                                 match name.as_str() {
                                     "update_filters" => {
@@ -3160,6 +3184,31 @@ fn collapse_overlay_from_host(
         let _ = chrome_webview
             .evaluate_script("if(window.closeSuggestions){window.closeSuggestions('host_event');}");
     }
+}
+
+/// Pushes the current custom theme CSS into the chrome webview (`window.__emberSetCustomTheme`).
+fn apply_custom_theme_to_chrome(chrome_webview: &WebView) {
+    let css = crate::theme::current().chrome_css();
+    let mut script = String::from(
+        "if(typeof window.__emberSetCustomTheme==='function'){window.__emberSetCustomTheme(",
+    );
+    push_js_quoted(&mut script, &css);
+    script.push_str(");}");
+    let _ = chrome_webview.evaluate_script(&script);
+}
+
+/// Pushes the current custom theme's page CSS into an internal page tab (the theme editor).
+fn apply_custom_theme_to_tab(tabs: &TabManager, tab_id: usize) {
+    let Some(webview) = tabs.get_tab(tab_id).and_then(|t| t.webview.as_ref()) else {
+        return;
+    };
+    let css = crate::theme::current().page_css();
+    let mut script = String::from(
+        "if(typeof window.__emberSetCustomTheme==='function'){window.__emberSetCustomTheme(",
+    );
+    push_js_quoted(&mut script, &css);
+    script.push_str(");}");
+    let _ = webview.evaluate_script(&script);
 }
 
 fn push_js_quoted(out: &mut String, s: &str) {

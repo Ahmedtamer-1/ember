@@ -9,6 +9,7 @@ pub const HISTORY_URL: &str = "ember://history";
 pub const BOOKMARKS_URL: &str = "ember://bookmarks";
 pub const DOWNLOADS_URL: &str = "ember://downloads";
 pub const SETTINGS_URL: &str = "ember://settings";
+pub const THEMES_URL: &str = "ember://themes";
 pub const WARNING_URL: &str = "ember://warning";
 pub const ADBLOCK_DEBUG_URL: &str = "ember://adblock-debug";
 pub const SELFTEST_URL: &str = "ember://selftest";
@@ -39,6 +40,7 @@ pub fn canonical_internal_url(url: &str) -> Option<&'static str> {
         "bookmarks" => Some(BOOKMARKS_URL),
         "downloads" => Some(DOWNLOADS_URL),
         "settings" => Some(SETTINGS_URL),
+        "themes" => Some(THEMES_URL),
         "warning" => Some(WARNING_URL),
         "adblock-debug" => Some(ADBLOCK_DEBUG_URL),
         #[cfg(debug_assertions)]
@@ -52,6 +54,7 @@ pub fn canonical_internal_url(url: &str) -> Option<&'static str> {
 pub fn is_singleton_internal_url(url: &str) -> Option<&'static str> {
     match canonical_internal_url(url)? {
         SETTINGS_URL => Some(SETTINGS_URL),
+        THEMES_URL => Some(THEMES_URL),
         HISTORY_URL => Some(HISTORY_URL),
         BOOKMARKS_URL => Some(BOOKMARKS_URL),
         DOWNLOADS_URL => Some(DOWNLOADS_URL),
@@ -78,6 +81,16 @@ pub fn warning_target(url: &str) -> Option<String> {
 
 /// Renders an internal `ember://` page into `(page_title, html_document)`.
 pub fn render_internal_page(url: &str, ctx: &PageCtx<'_>) -> Option<(String, String)> {
+    let (title, html) = render_internal_page_unthemed(url, ctx)?;
+    let css = crate::theme::current().page_css();
+    if css.is_empty() {
+        Some((title, html))
+    } else {
+        Some((title, crate::theme::inject_style(&html, &css)))
+    }
+}
+
+fn render_internal_page_unthemed(url: &str, ctx: &PageCtx<'_>) -> Option<(String, String)> {
     let canonical = canonical_internal_url(url)?;
     let tok = crate::ui::internal_ipc_token();
     match canonical {
@@ -106,6 +119,7 @@ pub fn render_internal_page(url: &str, ctx: &PageCtx<'_>) -> Option<(String, Str
                 tok,
             ),
         )),
+        THEMES_URL => Some((String::from("Themes"), render_themes_html(tok))),
         WARNING_URL => Some((
             String::from("Connection not secure"),
             render_https_warning_html(&warning_target(url).unwrap_or_default(), tok),
@@ -1043,6 +1057,7 @@ fn render_settings_html(
         &themes,
         settings.theme.as_str(),
     ));
+    general.push_str(r#"<div class="row"><div class="row-text"><div class="row-title">Custom theme</div><div class="row-desc">Colors, tab shapes, fonts, gradients, background images, presets and theme files.</div></div><button class="btn" onclick="emberSend('settings_action:open:ember://themes')">Customize&#8230;</button></div>"#);
     general.push_str(&select_row(
         "tab_suspend_minutes",
         "Suspend background tabs",
@@ -1432,6 +1447,30 @@ function proceed() {{ emberSend('https_proceed:' + TARGET); }}
 }
 
 /// Escapes `input` for use inside a single-quoted JavaScript string within a `<script>` element.
+const THEMES_PAGE_HTML: &str = include_str!("themes_page.html");
+
+/// Renders `ember://themes`, the custom theme editor, seeded with the current theme.
+fn render_themes_html(tok: &str) -> String {
+    let theme = crate::theme::current();
+    let mut json = String::from("{");
+    for (i, (k, v)) in theme.entries().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        json.push('"');
+        json.push_str(&escape_js_script_string(k));
+        json.push_str("\":\"");
+        json.push_str(&escape_js_script_string(v));
+        json.push('"');
+    }
+    json.push('}');
+    let shared_css = format!("{SHARED_INTERNAL_CSS}{SETTINGS_CSS}");
+    THEMES_PAGE_HTML
+        .replacen("/*__SHARED_CSS__*/", &shared_css, 1)
+        .replacen("/*__IPC_JS__*/", &ipc_send_js(tok), 1)
+        .replacen("/*__THEME_JSON__*/", &json, 1)
+}
+
 fn escape_js_script_string(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
@@ -1481,6 +1520,19 @@ mod tests {
     }
 
     #[cfg(debug_assertions)]
+    #[test]
+    fn test_themes_page_routing_and_render() {
+        assert_eq!(canonical_internal_url("ember://themes/"), Some(THEMES_URL));
+        assert_eq!(
+            is_singleton_internal_url("ember://themes"),
+            Some(THEMES_URL)
+        );
+        let html = render_themes_html("tok123");
+        assert!(!html.contains("/*__"), "all placeholders replaced");
+        assert!(html.contains("tok123"));
+        assert!(html.contains("var THEME = {"));
+    }
+
     #[test]
     fn test_selftest_internal_page_routing() {
         assert_eq!(

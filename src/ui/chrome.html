@@ -232,7 +232,7 @@
     flex-shrink: 0;
     padding: 0;
     margin: 0;
-    border-radius: 8px 8px 0 0;
+    border-radius: var(--radius-tab, 8px) var(--radius-tab, 8px) 0 0;
     background: var(--tab-inactive-bg);
     color: var(--text-secondary);
     cursor: default;
@@ -675,7 +675,7 @@
     height: 32px;
     margin: 0 4px;
     padding: 0 4px 0 12px;
-    border-radius: 16px;
+    border-radius: var(--radius-omnibox, 16px);
     background: var(--omnibox-bg);
     border: 1.5px solid transparent;
     transition: border-color 0.12s ease, background-color 0.12s ease;
@@ -688,7 +688,7 @@
   }
 
   .omnibox-wrapper.dropdown-open {
-    border-radius: 16px 16px 0 0;
+    border-radius: var(--radius-omnibox, 16px) var(--radius-omnibox, 16px) 0 0;
     border-bottom-color: transparent;
     background: var(--omnibox-focus-bg);
     border-color: var(--accent);
@@ -1013,7 +1013,7 @@
     background: var(--dropdown-bg);
     border: 1.5px solid var(--dropdown-border);
     border-top: 1px solid var(--divider);
-    border-radius: 0 0 16px 16px;
+    border-radius: 0 0 var(--radius-omnibox, 16px) var(--radius-omnibox, 16px);
     box-shadow: var(--dropdown-shadow);
     padding: 4px 0 8px 0;
     max-height: 360px;
@@ -1111,7 +1111,7 @@
     width: 248px;
     background: var(--dropdown-bg);
     border: 1px solid var(--dropdown-border);
-    border-radius: 12px;
+    border-radius: var(--radius-menu, 12px);
     box-shadow: var(--dropdown-shadow);
     padding: 6px 0;
     opacity: 0;
@@ -2404,7 +2404,24 @@
         INACTIVE_CLOSE_HIDE_WIDTH: 56
       });
       const TAB_ANIM_DURATION = TAB_LAYOUT_CONSTANTS.ANIM_DURATION;
-      const TAB_MAX_WIDTH = TAB_LAYOUT_CONSTANTS.MAX_WIDTH;
+      let TAB_MAX_WIDTH = TAB_LAYOUT_CONSTANTS.MAX_WIDTH;
+      // Custom themes may override --tab-max-width; read it whenever the theme changes.
+      function refreshThemeTabMaxWidth() {
+        const raw = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--tab-max-width"));
+        TAB_MAX_WIDTH = Number.isFinite(raw) && raw >= 100 && raw <= 400 ? raw : TAB_LAYOUT_CONSTANTS.MAX_WIDTH;
+      }
+      refreshThemeTabMaxWidth();
+      window.__emberSetCustomTheme = function (css) {
+        let el = document.getElementById("ember-custom-theme");
+        if (!el) {
+          el = document.createElement("style");
+          el.id = "ember-custom-theme";
+          document.head.appendChild(el);
+        }
+        el.textContent = typeof css === "string" ? css : "";
+        refreshThemeTabMaxWidth();
+        window.dispatchEvent(new Event("resize"));
+      };
       const TAB_MIN_WIDTH = TAB_LAYOUT_CONSTANTS.MIN_WIDTH;
       const TAB_GAP = TAB_LAYOUT_CONSTANTS.GAP;
 
