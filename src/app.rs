@@ -753,7 +753,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let builder = WindowBuilder::new()
         .with_title(&ui_config.title)
         .with_inner_size(LogicalSize::new(ui_config.width, ui_config.height))
-        .with_min_inner_size(LogicalSize::new(480.0, 320.0));
+        .with_min_inner_size(LogicalSize::new(480.0, 320.0))
+        .with_window_icon(crate::brand::icon(crate::brand::WINDOW_ICON_SIZE));
     let window = ui::configure_window_builder(builder).build(&event_loop)?;
     ui::install_window_frame(&window);
     ui::apply_theme_preference(&window, init_settings.theme);

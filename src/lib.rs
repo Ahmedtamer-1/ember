@@ -2,6 +2,7 @@
 
 pub mod adblock;
 pub mod app;
+pub mod brand;
 pub mod context_menu;
 pub mod downloads;
 pub mod find;

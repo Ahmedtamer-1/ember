@@ -1415,7 +1415,7 @@ mod platform {
     use std::{mem::size_of, ptr};
 
     use tao::{
-        platform::windows::WindowExtWindows,
+        platform::windows::{WindowBuilderExtWindows, WindowExtWindows},
         window::{Window, WindowBuilder},
     };
 
@@ -1570,7 +1570,9 @@ mod platform {
         // Keep native WS_OVERLAPPEDWINDOW (WS_THICKFRAME | WS_CAPTION | WS_MAXIMIZEBOX | WS_MINIMIZEBOX)
         // so Windows 11 native resize borders, Aero Snap, and Win+Arrow work cleanly; the visible
         // caption is removed in `frame_subclass_proc` via `WM_NCCALCSIZE`.
-        builder.with_decorations(true)
+        builder
+            .with_decorations(true)
+            .with_taskbar_icon(crate::brand::icon(crate::brand::TASKBAR_ICON_SIZE))
     }
 
     pub fn bring_chrome_webview_to_front(window: &Window) {

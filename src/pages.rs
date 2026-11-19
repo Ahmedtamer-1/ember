@@ -892,6 +892,9 @@ const SETTINGS_CSS: &str = r#"
 .row-text { min-width: 0; flex: 1; }
 .row-title { font-size: 14px; font-weight: 600; }
 .row-desc { font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
+.about-row { justify-content: flex-start; }
+.about-mark { width: 40px; height: 40px; flex: none; }
+.about-mark svg { width: 100%; height: 100%; display: block; }
 .ctl { height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; outline: none; min-width: 190px; }
 .ctl:focus { border-color: var(--accent); }
 .switch { appearance: none; -webkit-appearance: none; width: 38px; height: 22px; border-radius: 11px; background: var(--border); position: relative; cursor: pointer; flex-shrink: 0; transition: background 0.15s; }
@@ -1150,6 +1153,12 @@ fn render_settings_html(
         settings.search_suggestions_enabled,
     ));
 
+    let about = format!(
+        r#"<div class="row about-row"><div class="about-mark" aria-hidden="true">{logo}</div><div class="row-text"><div class="row-title">Ember</div><div class="row-desc">Version {version} &middot; A lightweight, privacy-focused browser.</div></div></div>"#,
+        logo = crate::brand::LOGO_SVG,
+        version = escape_html(env!("CARGO_PKG_VERSION")),
+    );
+
     let clear = r#"<div class="checks"><label><input type="checkbox" id="cd-history" checked> Browsing history</label><label><input type="checkbox" id="cd-cookies"> Cookies and site data</label><label><input type="checkbox" id="cd-cache"> Cached files</label></div><div class="actions"><button class="btn danger" onclick="clearData()">Clear data</button><span id="clear-status" class="status"></span></div>"#;
 
     format!(
@@ -1175,6 +1184,7 @@ fn render_settings_html(
   <div class="section"><h2>Allowed sites</h2><div class="card">{allow}</div></div>
   <div class="section"><h2>Privacy and security</h2><div class="card">{privacy}</div></div>
   <div class="section"><h2>Clear browsing data</h2><div class="card">{clear}</div></div>
+  <div class="section"><h2>About Ember</h2><div class="card">{about}</div></div>
   <div class="status" style="text-align:center;padding:12px 0 24px;">Configuration stored in <code>{config_path}</code></div>
 </div>
 <div id="saved">Saved</div>

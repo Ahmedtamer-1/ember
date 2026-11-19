@@ -780,6 +780,9 @@ pub fn derive_default_favicon(url: &str) -> Option<String> {
             crate::pages::BOOKMARKS_URL => Some(String::from(
                 "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%235f6368'%3E%3Cpath d='M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z'/%3E%3C/svg%3E",
             )),
+            crate::pages::NEWTAB_URL | crate::pages::THEMES_URL => {
+                Some(crate::brand::logo_data_uri())
+            }
             crate::pages::DOWNLOADS_URL => Some(String::from(
                 "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%235f6368'%3E%3Cpath d='M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z'/%3E%3C/svg%3E",
             )),
