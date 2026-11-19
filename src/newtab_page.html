@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="color-scheme" content="light dark">
+<title>New Tab</title>
+<style>
+/*__SHARED_CSS__*/
+body.nt {
+  --nt-fg: var(--nt-text, var(--text));
+  --nt-muted: var(--nt-text, var(--muted));
+  overflow-x: hidden;
+}
+.nt-top {
+  position: fixed;
+  top: 14px;
+  right: 16px;
+  display: flex;
+  gap: 8px;
+  z-index: 2;
+}
+.nt-link {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 0;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.nt-link:hover { background: var(--surface-hover); }
+.nt-main {
+  min-height: 100vh;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 56px 24px 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: calc(15px * var(--nt-scale, 1));
+  color: var(--nt-fg);
+}
+.layout-centered .nt-main { justify-content: center; }
+.layout-top .nt-main { justify-content: flex-start; padding-top: 11vh; }
+.has-text-color .nt-hero, .has-text-color .nt-label, .has-text-color .tl { text-shadow: 0 1px 8px rgba(0, 0, 0, 0.25); }
+.nt-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  margin-bottom: 1.9em;
+}
+.nt-logo {
+  font-size: 2.2em;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  margin-bottom: 0.25em;
+  display: flex;
+  align-items: center;
+  gap: 0.35em;
+}
+.nt-logo svg { height: 1.4em; width: auto; }
+.nt-mark {
+  width: 1.25em;
+  height: 1.25em;
+  border-radius: 0.36em;
+  background: linear-gradient(135deg, #f97316, #ef4444);
+  box-shadow: 0 4px 16px rgba(239, 68, 68, 0.3);
+}
+.nt-clock {
+  font-size: 4.6em;
+  font-weight: 300;
+  letter-spacing: -0.04em;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.nt-ampm { font-size: 0.32em; font-weight: 500; letter-spacing: 0; margin-left: 0.2em; color: var(--nt-muted); }
+.nt-date { font-size: 1em; color: var(--nt-muted); margin-top: 0.35em; }
+.nt-greeting { font-size: 1.45em; font-weight: 600; margin-top: 0.5em; }
+.nt-search {
+  width: 100%;
+  max-width: 600px;
+  margin-bottom: 2.4em;
+}
+.nt-search input {
+  width: 100%;
+  height: 48px;
+  padding: 0 22px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--border) var(--nt-search-alpha, 100%), transparent);
+  background: color-mix(in srgb, var(--surface) var(--nt-search-alpha, 100%), transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  box-shadow: var(--shadow);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+.search-glass .nt-search input { backdrop-filter: blur(14px); }
+.nt-search input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent), var(--shadow); }
+.search-pill .nt-search input { border-radius: 999px; }
+.search-square .nt-search input { border-radius: 4px; }
+.ssize-small .nt-search { max-width: 480px; }
+.ssize-small .nt-search input { height: 40px; font-size: 14px; }
+.ssize-large .nt-search { max-width: 700px; }
+.ssize-large .nt-search input { height: 58px; font-size: 17px; padding: 0 26px; }
+.nt-label {
+  width: 100%;
+  font-size: 0.75em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--nt-muted);
+  margin-bottom: 0.9em;
+  text-align: center;
+}
+#nt-shortcuts { width: 100%; }
+.nt-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 14px 10px;
+  width: calc(var(--nt-cols, 6) * (var(--nt-tile, 56px) + 46px) - 10px);
+  max-width: 100%;
+  margin: 0 auto 2.2em;
+}
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  border: 0;
+  border-radius: calc(var(--nt-radius, 16px) + 4px);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  width: calc(var(--nt-tile, 56px) + 36px);
+  outline: none;
+  transition: background 0.15s, transform 0.15s;
+}
+.tile:hover, .tile:focus-visible { background: color-mix(in srgb, var(--surface) 45%, transparent); transform: translateY(-2px); }
+.ti {
+  width: var(--nt-tile, 56px);
+  height: var(--nt-tile, 56px);
+  border-radius: var(--nt-radius, 16px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(var(--nt-tile, 56px) * 0.4);
+  font-weight: 700;
+  background: var(--surface);
+  color: hsl(var(--h, 210) 62% 48%);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+.tiles-glass .ti { background: color-mix(in srgb, var(--surface) 55%, transparent); backdrop-filter: blur(12px); border-color: color-mix(in srgb, var(--border) 50%, transparent); }
+@media (prefers-color-scheme: dark) { .ti { color: hsl(var(--h, 210) 75% 70%); } }
+.tl {
+  font-size: 0.82em;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tiles-icon .tl { display: none; }
+.tile-add .ti { color: var(--muted); font-weight: 400; border-style: dashed; box-shadow: none; background: transparent; }
+.nt-mv { width: 100%; max-width: 720px; margin-bottom: 2.2em; }
+.mv-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  padding: 6px 12px 6px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 75%, transparent);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.85em;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.chip:hover { background: var(--surface-hover); }
+.chip .ci { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; background: var(--surface-hover); color: hsl(var(--h, 210) 62% 50%); flex-shrink: 0; }
+.chip span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.nt-notes { width: 100%; max-width: 600px; }
+.nt-notes textarea {
+  width: 100%;
+  min-height: 110px;
+  resize: vertical;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  outline: none;
+}
+.nt-notes textarea:focus { border-color: var(--accent); }
+.hide-logo .nt-logo, .hide-clock .nt-clock, .hide-date .nt-date, .hide-greeting .nt-greeting,
+.hide-search .nt-search, .hide-shortcuts #nt-shortcuts, .hide-most_visited .nt-mv, .hide-notes .nt-notes { display: none; }
+.nt-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  z-index: 3;
+  transition: background 0.15s, transform 0.15s;
+}
+.nt-fab:hover { background: var(--surface-hover); transform: scale(1.06); }
+.nt-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 340px;
+  max-width: 100vw;
+  overflow-y: auto;
+  background: var(--surface);
+  color: var(--text);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.18);
+  z-index: 5;
+  transform: translateX(105%);
+  visibility: hidden;
+  transition: transform 0.22s ease, visibility 0s linear 0.22s;
+  font-size: 13px;
+}
+.panel-open .nt-panel { transform: none; visibility: visible; transition: transform 0.22s ease, visibility 0s; }
+.np-head { position: sticky; top: 0; display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: var(--surface); border-bottom: 1px solid var(--border); z-index: 1; }
+.np-head h2 { font-size: 15px; font-weight: 600; }
+.np-status { font-size: 11.5px; color: var(--muted); margin-right: auto; margin-left: 10px; opacity: 0; transition: opacity 0.2s; }
+.np-status.show { opacity: 1; }
+.np-x { border: 0; background: transparent; color: var(--text); font-size: 20px; line-height: 1; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; }
+.np-x:hover { background: var(--surface-hover); }
+.np-sec { padding: 12px 16px 6px; border-bottom: 1px solid var(--border); }
+.np-sec h3 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin-bottom: 8px; }
+.np-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 34px; }
+.np-row > span { flex: 1; }
+.np-row select, .np-row input[type=text], .np-in {
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+.np-row select { min-width: 132px; }
+.np-row input[type=text] { width: 150px; }
+.np-in:focus, .np-row select:focus, .np-row input[type=text]:focus { border-color: var(--accent); }
+.np-in.bad { border-color: var(--danger); }
+.np-row input[type=range] { width: 120px; accent-color: var(--accent); }
+.np-row output { width: 34px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.np-row input[type=color] { width: 40px; height: 26px; border: 1px solid var(--border); border-radius: 6px; background: none; padding: 1px; }
+.np-sw { appearance: none; -webkit-appearance: none; width: 34px; height: 20px; border-radius: 10px; background: var(--border); position: relative; cursor: pointer; flex-shrink: 0; transition: background 0.15s; }
+.np-sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform 0.15s; }
+.np-sw:checked { background: var(--accent); }
+.np-sw:checked::after { transform: translateX(14px); }
+.np-sc { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+.np-sci { display: grid; grid-template-columns: 1fr auto; gap: 4px 6px; padding: 8px; border: 1px solid var(--border); border-radius: 9px; }
+.np-sci .np-in { width: 100%; min-width: 0; }
+.np-btns { grid-row: span 2; display: flex; flex-direction: column; gap: 2px; }
+.np-b { border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 6px; min-width: 26px; height: 22px; font: inherit; font-size: 11px; cursor: pointer; }
+.np-b:hover:not(:disabled) { background: var(--surface-hover); }
+.np-b:disabled { opacity: 0.4; cursor: default; }
+.np-b.primary { background: var(--accent); border-color: var(--accent); color: #fff; height: 30px; padding: 0 12px; }
+.np-add { display: grid; grid-template-columns: 1fr; gap: 6px; margin: 8px 0 10px; }
+.np-err { color: var(--danger); font-size: 11.5px; min-height: 14px; }
+.np-foot { padding: 14px 16px 24px; }
+.np-b.wide { height: 30px; padding: 0 12px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  .tile:hover, .tile:focus-visible, .nt-fab:hover { transform: none; }
+}
+</style>
+</head>
+<body __BODY_ATTRS__>
+<div class="nt-top">
+  <button class="nt-link" data-url="ember://bookmarks">Bookmarks</button>
+  <button class="nt-link" data-url="ember://history">History</button>
+</div>
+<main class="nt-main">
+  <div class="nt-hero">
+    <div id="ember-logo" class="nt-logo"><!--__LOGO__--></div>
+    <div class="nt-clock" id="nt-clock"><span id="nt-time"></span><span class="nt-ampm" id="nt-ampm"></span></div>
+    <div class="nt-date" id="nt-date"></div>
+    <div class="nt-greeting" id="nt-greeting"></div>
+  </div>
+  <form class="nt-search" id="nt-search-form" role="search">
+    <input id="nt-search" type="text" placeholder="Search the web or type a URL" aria-label="Search the web or type a URL" autocomplete="off" spellcheck="false" autofocus>
+  </form>
+  <section id="nt-shortcuts">
+    <div class="nt-tiles" id="nt-tiles"><!--__TILES__--></div>
+  </section>
+  <section class="nt-mv">
+    <div class="nt-label">Most visited</div>
+    <div class="mv-row"><!--__MV__--></div>
+  </section>
+  <section class="nt-notes">
+    <textarea id="nt-notes" data-k="notes" maxlength="4000" placeholder="Quick notes (saved on this device)" aria-label="Quick notes"><!--__NOTES__--></textarea>
+  </section>
+</main>
+<button class="nt-fab" id="nt-fab" title="Customize" aria-label="Customize new tab page" aria-controls="nt-panel" aria-expanded="false">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+</button>
+<aside class="nt-panel" id="nt-panel" aria-label="Customize new tab page">
+  <div class="np-head"><h2>Customize</h2><span class="np-status" id="np-status">Saved</span><button class="np-x" id="np-close" aria-label="Close">&times;</button></div>
+  <div class="np-sec">
+    <h3>Layout</h3>
+    <label class="np-row"><span>Position</span><select data-k="layout"><option value="centered">Centered</option><option value="top">Top</option></select></label>
+    <label class="np-row"><span>Font size</span><input type="range" data-k="font_scale" min="80" max="140" step="5"><output></output></label>
+    <label class="np-row"><span>Custom text color</span><input type="checkbox" class="np-sw" id="np-tc-on"></label>
+    <label class="np-row"><span>Text color</span><input type="color" id="np-tc" value="#ffffff"></label>
+  </div>
+  <div class="np-sec">
+    <h3>Show</h3>
+    <label class="np-row"><span>Logo</span><input type="checkbox" class="np-sw" data-k="show_logo"></label>
+    <label class="np-row"><span>Clock</span><input type="checkbox" class="np-sw" data-k="show_clock"></label>
+    <label class="np-row"><span>24-hour clock</span><input type="checkbox" class="np-sw" data-k="clock_24h"></label>
+    <label class="np-row"><span>Seconds</span><input type="checkbox" class="np-sw" data-k="clock_seconds"></label>
+    <label class="np-row"><span>Date</span><input type="checkbox" class="np-sw" data-k="show_date"></label>
+    <label class="np-row"><span>Greeting</span><input type="checkbox" class="np-sw" data-k="show_greeting"></label>
+    <label class="np-row"><span>Your name</span><input type="text" data-k="greeting_name" maxlength="40" placeholder="Optional"></label>
+    <label class="np-row"><span>Search box</span><input type="checkbox" class="np-sw" data-k="show_search"></label>
+    <label class="np-row"><span>Shortcuts</span><input type="checkbox" class="np-sw" data-k="show_shortcuts"></label>
+    <label class="np-row"><span>Most visited list</span><input type="checkbox" class="np-sw" data-k="show_most_visited"></label>
+    <label class="np-row"><span>Quick notes</span><input type="checkbox" class="np-sw" data-k="show_notes"></label>
+  </div>
+  <div class="np-sec">
+    <h3>Search box</h3>
+    <label class="np-row"><span>Shape</span><select data-k="search_style"><option value="rounded">Rounded</option><option value="pill">Pill</option><option value="square">Square</option></select></label>
+    <label class="np-row"><span>Size</span><select data-k="search_size"><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></label>
+    <label class="np-row"><span>Opacity</span><input type="range" data-k="search_opacity" min="20" max="100" step="5"><output></output></label>
+  </div>
+  <div class="np-sec">
+    <h3>Shortcut tiles</h3>
+    <label class="np-row"><span>Show</span><select data-k="source"><option value="mine">My shortcuts</option><option value="most_visited">Most visited</option><option value="both">Both</option></select></label>
+    <label class="np-row"><span>Style</span><select data-k="tile_style"><option value="icon_label">Icon + label</option><option value="icon">Icon only</option></select></label>
+    <label class="np-row"><span>Size</span><input type="range" data-k="tile_size" min="40" max="96" step="4"><output></output></label>
+    <label class="np-row"><span>Columns</span><input type="range" data-k="tile_columns" min="2" max="10" step="1"><output></output></label>
+    <label class="np-row"><span>Corner radius</span><input type="range" data-k="tile_radius" min="0" max="48" step="2"><output></output></label>
+    <label class="np-row"><span>Translucent</span><input type="checkbox" class="np-sw" data-k="tile_translucent"></label>
+  </div>
+  <div class="np-sec">
+    <h3>My shortcuts</h3>
+    <div class="np-sc" id="np-sc"></div>
+    <div class="np-add">
+      <input class="np-in" id="np-add-title" type="text" maxlength="80" placeholder="Title (optional)" aria-label="Shortcut title">
+      <input class="np-in" id="np-add-url" type="text" maxlength="2048" placeholder="https://example.com" aria-label="Shortcut URL" spellcheck="false">
+      <button class="np-b primary" id="np-add-btn">Add shortcut</button>
+      <div class="np-err" id="np-err" role="alert"></div>
+    </div>
+  </div>
+  <div class="np-foot"><button class="np-b wide" id="np-reset">Reset appearance</button></div>
+</aside>
+<script>
+/*__IPC_JS__*/
+/*__DATA__*/
+(function () {
+  'use strict';
+  var D = document;
+  var body = D.body;
+  var cfg = NT.values;
+  var shortcuts = NT.shortcuts;
+  var mv = NT.mv;
+  var MAX = NT.max;
+  function $(id) { return D.getElementById(id); }
+  function on(k) { return cfg[k] === 'true'; }
+  function go(url) { if (url) { emberSend('navigate:' + url); } }
+
+  function hostOf(u) {
+    var m = /^[a-z][a-z0-9+.-]*:\/\/([^\/?#]*)/i.exec(u);
+    var h = m ? m[1] : u;
+    return h.replace(/^.*@/, '').replace(/^www\./i, '');
+  }
+  function hue(s) {
+    var h = 0;
+    for (var i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) >>> 0; }
+    return h % 360;
+  }
+
+  // Must match body_attrs() in pages.rs.
+  function applyConfig() {
+    var cls = ['nt', 'layout-' + cfg.layout, 'search-' + cfg.search_style, 'ssize-' + cfg.search_size, 'tiles-' + cfg.tile_style];
+    if (on('tile_translucent')) { cls.push('tiles-glass'); }
+    if (Number(cfg.search_opacity) < 100) { cls.push('search-glass'); }
+    ['logo', 'clock', 'date', 'greeting', 'search', 'shortcuts', 'most_visited', 'notes'].forEach(function (n) {
+      if (!on('show_' + n)) { cls.push('hide-' + n); }
+    });
+    if (cfg.text_color) { cls.push('has-text-color'); }
+    if (body.classList.contains('panel-open')) { cls.push('panel-open'); }
+    body.className = cls.join(' ');
+    var s = body.style;
+    s.setProperty('--nt-tile', cfg.tile_size + 'px');
+    s.setProperty('--nt-cols', cfg.tile_columns);
+    s.setProperty('--nt-radius', cfg.tile_radius + 'px');
+    s.setProperty('--nt-scale', String(Number(cfg.font_scale) / 100));
+    s.setProperty('--nt-search-alpha', cfg.search_opacity + '%');
+    if (cfg.text_color) { s.setProperty('--nt-text', cfg.text_color); } else { s.removeProperty('--nt-text'); }
+  }
+
+  function tileList() {
+    var out = [];
+    var seen = {};
+    if (cfg.source !== 'most_visited') {
+      shortcuts.forEach(function (sc) { out.push(sc); seen[sc.u] = 1; });
+    }
+    if (cfg.source !== 'mine') {
+      mv.forEach(function (m) { if (!seen[m.u]) { out.push(m); } });
+    }
+    return out;
+  }
+  function makeTile(title, url, icon, h) {
+    var b = D.createElement('button');
+    b.className = 'tile';
+    var i = D.createElement('span');
+    i.className = 'ti';
+    i.style.setProperty('--h', String(h));
+    i.textContent = icon;
+    var l = D.createElement('span');
+    l.className = 'tl';
+    l.textContent = title;
+    b.appendChild(i);
+    b.appendChild(l);
+    return b;
+  }
+  function renderTiles() {
+    var g = $('nt-tiles');
+    g.textContent = '';
+    tileList().forEach(function (it) {
+      var h = hostOf(it.u);
+      var b = makeTile(it.t, it.u, (h.charAt(0) || '?').toUpperCase(), hue(h));
+      b.dataset.url = it.u;
+      b.title = it.t + '\n' + it.u;
+      g.appendChild(b);
+    });
+    if (cfg.source !== 'most_visited' && shortcuts.length < MAX) {
+      var a = makeTile('Add shortcut', '', '+', 0);
+      a.classList.add('tile-add');
+      a.dataset.add = '1';
+      a.title = 'Add shortcut';
+      g.appendChild(a);
+    }
+  }
+
+  // Clock, date and greeting; only ticks while something time-based is visible.
+  var timer = 0;
+  function pad(n) { return n < 10 ? '0' + n : String(n); }
+  function tick() {
+    clearTimeout(timer);
+    if (D.hidden) { return; }
+    var now = new Date();
+    var c = on('show_clock'), d = on('show_date'), g = on('show_greeting');
+    if (c) {
+      var h = now.getHours(), ampm = '';
+      if (!on('clock_24h')) { ampm = h < 12 ? 'AM' : 'PM'; h = h % 12 || 12; }
+      $('nt-time').textContent = (on('clock_24h') ? pad(h) : String(h)) + ':' + pad(now.getMinutes()) + (on('clock_seconds') ? ':' + pad(now.getSeconds()) : '');
+      $('nt-ampm').textContent = ampm;
+    }
+    if (d) { $('nt-date').textContent = now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }); }
+    if (g) {
+      var hr = now.getHours();
+      var text = hr < 5 ? 'Good night' : hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
+      $('nt-greeting').textContent = cfg.greeting_name ? text + ', ' + cfg.greeting_name : text;
+    }
+    if (c || d || g) {
+      var wait = (c && on('clock_seconds')) ? 1000 - now.getMilliseconds() : 60000 - now.getSeconds() * 1000 - now.getMilliseconds();
+      timer = setTimeout(tick, wait + 20);
+    }
+  }
+  D.addEventListener('visibilitychange', tick);
+
+  // Persistence: the whole config is sent (debounced) over privileged IPC.
+  function enc(v) { return String(v).replace(/\\/g, '\\\\').replace(/\r/g, '').replace(/\n/g, '\\n').replace(/\t/g, '\\t'); }
+  var saveTimer = 0, statusTimer = 0;
+  function save() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      var lines = [];
+      Object.keys(cfg).forEach(function (k) { lines.push(k + '=' + enc(cfg[k])); });
+      shortcuts.forEach(function (sc) { lines.push('shortcut=' + sc.u + '\t' + enc(sc.t)); });
+      emberSend('newtab_save:' + lines.join('\n'));
+      var st = $('np-status');
+      st.classList.add('show');
+      clearTimeout(statusTimer);
+      statusTimer = setTimeout(function () { st.classList.remove('show'); }, 1200);
+    }, 350);
+  }
+  function changed() { applyConfig(); tick(); save(); }
+
+  // Shortcut URLs: http(s) only (validated again by the browser).
+  function normUrl(u) {
+    u = u.trim();
+    if (!u) { return null; }
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(u) && !/^(javascript|data|file|about|blob|vbscript|ember|mailto|view-source):/i.test(u)) { u = 'https://' + u; }
+    if (!/^https?:\/\//i.test(u) || /[\s"<>`\\]/.test(u) || u.length > 2048) { return null; }
+    var host = u.replace(/^https?:\/\//i, '').split(/[\/?#]/)[0].replace(/^.*@/, '');
+    if (!host || host.charAt(0) === ':') { return null; }
+    return u;
+  }
+  function cleanTitle(t, u) {
+    t = t.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 80);
+    return t || hostOf(u).slice(0, 80);
+  }
+
+  function input(cls, value, ph, label) {
+    var el = D.createElement('input');
+    el.type = 'text';
+    el.className = 'np-in ' + cls;
+    el.value = value;
+    el.placeholder = ph;
+    el.setAttribute('aria-label', label);
+    el.spellcheck = false;
+    return el;
+  }
+  function btn(text, label, fn, disabled) {
+    var b = D.createElement('button');
+    b.className = 'np-b';
+    b.textContent = text;
+    b.title = label;
+    b.setAttribute('aria-label', label);
+    b.disabled = !!disabled;
+    b.addEventListener('click', fn);
+    return b;
+  }
+  function shortcutsChanged() { renderList(); renderTiles(); save(); }
+  function move(i, d) {
+    var j = i + d;
+    if (j < 0 || j >= shortcuts.length) { return; }
+    var t = shortcuts[i]; shortcuts[i] = shortcuts[j]; shortcuts[j] = t;
+    shortcutsChanged();
+  }
+  function renderList() {
+    var list = $('np-sc');
+    list.textContent = '';
+    shortcuts.forEach(function (sc, i) {
+      var row = D.createElement('div');
+      row.className = 'np-sci';
+      var t = input('', sc.t, 'Title', 'Shortcut title');
+      t.maxLength = 80;
+      t.addEventListener('change', function () { sc.t = cleanTitle(t.value, sc.u); t.value = sc.t; renderTiles(); save(); });
+      var u = input('', sc.u, 'https://example.com', 'Shortcut URL');
+      u.maxLength = 2048;
+      u.addEventListener('change', function () {
+        var n = normUrl(u.value);
+        if (!n) { u.classList.add('bad'); return; }
+        u.classList.remove('bad');
+        sc.u = n; u.value = n;
+        renderTiles(); save();
+      });
+      var bs = D.createElement('div');
+      bs.className = 'np-btns';
+      bs.appendChild(btn('↑', 'Move up', function () { move(i, -1); }, i === 0));
+      bs.appendChild(btn('↓', 'Move down', function () { move(i, 1); }, i === shortcuts.length - 1));
+      bs.appendChild(btn('✕', 'Remove', function () { shortcuts.splice(i, 1); shortcutsChanged(); }));
+      row.appendChild(t);
+      row.appendChild(bs);
+      row.appendChild(u);
+      list.appendChild(row);
+    });
+  }
+  function addShortcut() {
+    var err = $('np-err');
+    var urlEl = $('np-add-url'), titleEl = $('np-add-title');
+    if (shortcuts.length >= MAX) { err.textContent = 'You can have up to ' + MAX + ' shortcuts.'; return; }
+    var u = normUrl(urlEl.value);
+    if (!u) { err.textContent = 'Enter a valid http:// or https:// address.'; urlEl.classList.add('bad'); return; }
+    err.textContent = '';
+    urlEl.classList.remove('bad');
+    shortcuts.push({ t: cleanTitle(titleEl.value, u), u: u });
+    urlEl.value = ''; titleEl.value = '';
+    if (cfg.source === 'most_visited') { cfg.source = 'both'; syncControls(); applyConfig(); }
+    shortcutsChanged();
+    urlEl.focus();
+  }
+  $('np-add-btn').addEventListener('click', addShortcut);
+  [$('np-add-url'), $('np-add-title')].forEach(function (el) {
+    el.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addShortcut(); } });
+  });
+
+  // Generic controls bound to config keys via data-k.
+  var controls = D.querySelectorAll('[data-k]');
+  function syncControls() {
+    Array.prototype.forEach.call(controls, function (el) {
+      var k = el.getAttribute('data-k');
+      if (el.type === 'checkbox') { el.checked = on(k); } else { el.value = cfg[k]; }
+      if (el.nextElementSibling && el.nextElementSibling.tagName === 'OUTPUT') { el.nextElementSibling.textContent = el.value; }
+    });
+    $('np-tc-on').checked = !!cfg.text_color;
+    if (/^#[0-9a-f]{6}$/i.test(cfg.text_color)) { $('np-tc').value = cfg.text_color; }
+  }
+  Array.prototype.forEach.call(controls, function (el) {
+    var k = el.getAttribute('data-k');
+    el.addEventListener(el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input', function () {
+      cfg[k] = el.type === 'checkbox' ? String(el.checked) : el.value;
+      if (el.nextElementSibling && el.nextElementSibling.tagName === 'OUTPUT') { el.nextElementSibling.textContent = el.value; }
+      if (k === 'source') { renderTiles(); }
+      changed();
+    });
+  });
+  function setTextColor() { cfg.text_color = $('np-tc-on').checked ? $('np-tc').value : ''; changed(); }
+  $('np-tc-on').addEventListener('change', setTextColor);
+  $('np-tc').addEventListener('input', function () { $('np-tc-on').checked = true; setTextColor(); });
+  $('np-reset').addEventListener('click', function () {
+    Object.keys(NT.defaults).forEach(function (k) { if (k !== 'notes') { cfg[k] = NT.defaults[k]; } });
+    syncControls(); renderTiles(); changed();
+  });
+
+  // Panel
+  function setPanel(open) {
+    body.classList.toggle('panel-open', open);
+    $('nt-fab').setAttribute('aria-expanded', String(open));
+    if (open) { renderList(); }
+  }
+  $('nt-fab').addEventListener('click', function () { setPanel(!body.classList.contains('panel-open')); });
+  $('np-close').addEventListener('click', function () { setPanel(false); });
+  D.addEventListener('keydown', function (e) { if (e.key === 'Escape' && body.classList.contains('panel-open')) { setPanel(false); $('nt-fab').focus(); } });
+
+  // Navigation (tiles, chips, top links) and the add tile.
+  D.addEventListener('click', function (e) {
+    var el = e.target.closest ? e.target.closest('[data-url],[data-add]') : null;
+    if (!el) { return; }
+    if (el.hasAttribute('data-add')) { setPanel(true); $('np-add-url').focus(); return; }
+    go(el.getAttribute('data-url'));
+  });
+  $('nt-search-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var v = $('nt-search').value.trim();
+    if (v) { go(v); }
+  });
+
+  syncControls();
+  tick();
+})();
+</script>
+</body>
+</html>

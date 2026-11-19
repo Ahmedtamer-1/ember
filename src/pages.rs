@@ -96,7 +96,7 @@ fn render_internal_page_unthemed(url: &str, ctx: &PageCtx<'_>) -> Option<(String
     match canonical {
         NEWTAB_URL => Some((
             String::from("New Tab"),
-            render_newtab_html(&ctx.storage.most_visited(8), tok),
+            render_newtab_html(&ctx.storage.most_visited(8), &crate::newtab::current(), tok),
         )),
         HISTORY_URL => Some((
             String::from("History"),
@@ -242,215 +242,242 @@ a { color: inherit; text-decoration: none; }
 .pill-btn.danger { color: var(--danger); border-color: var(--danger); }
 "#;
 
-fn render_newtab_html(most_visited: &[HistoryEntry], tok: &str) -> String {
-    let ipc_js = ipc_send_js(tok);
-    let default_sites: &[(&str, &str)] = &[
-        ("Rust Programming Language", "https://www.rust-lang.org"),
-        ("Crates.io Registry", "https://crates.io"),
-        ("Docs.rs Documentation", "https://docs.rs"),
-        ("MDN Web Docs", "https://developer.mozilla.org"),
-        ("GitHub", "https://github.com"),
-        ("Wikipedia", "https://www.wikipedia.org"),
-    ];
+// ---------------------------------------------------------------------------------------------
+// New tab page (`ember://newtab`): customizable home screen, see `crate::newtab`.
+// ---------------------------------------------------------------------------------------------
 
-    let mut tiles_html = String::new();
-    if most_visited.is_empty() {
-        for (title, url) in default_sites {
-            tiles_html.push_str(&render_tile(title, url, None));
-        }
-    } else {
-        for entry in most_visited {
-            tiles_html.push_str(&render_tile(
-                &entry.title,
-                &entry.url,
-                Some(entry.visit_count),
-            ));
+const NEWTAB_PAGE_HTML: &str = include_str!("newtab_page.html");
+
+/// Sites shown in the most-visited slot before any history exists.
+const NEWTAB_DEFAULT_SITES: &[(&str, &str)] = &[
+    ("Rust", "https://www.rust-lang.org"),
+    ("crates.io", "https://crates.io"),
+    ("Docs.rs", "https://docs.rs"),
+    ("MDN Web Docs", "https://developer.mozilla.org"),
+    ("GitHub", "https://github.com"),
+    ("Wikipedia", "https://www.wikipedia.org"),
+];
+
+/// Hue (0..360) derived from a host name; must match `hue()` in `newtab_page.html`.
+fn newtab_hue(host: &str) -> u32 {
+    host.encode_utf16()
+        .fold(0u32, |h, c| h.wrapping_mul(31).wrapping_add(u32::from(c)))
+        % 360
+}
+
+/// Host used for a tile's icon letter and color (userinfo and `www.` stripped).
+fn newtab_icon_host(url: &str) -> String {
+    let host = extract_display_host(url);
+    let host = host.rsplit('@').next().unwrap_or(&host);
+    host.strip_prefix("www.").unwrap_or(host).to_owned()
+}
+
+fn newtab_initial(host: &str) -> String {
+    host.chars()
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_else(|| String::from("?"))
+}
+
+/// Body `class` and `style` for the configuration; must match `applyConfig()` in
+/// `newtab_page.html`. All values are validated by `crate::newtab`, and are escaped anyway.
+fn newtab_body_attrs(cfg: &crate::newtab::NewtabConfig) -> String {
+    let mut classes = vec![
+        String::from("nt"),
+        format!("layout-{}", cfg.get("layout")),
+        format!("search-{}", cfg.get("search_style")),
+        format!("ssize-{}", cfg.get("search_size")),
+        format!("tiles-{}", cfg.get("tile_style")),
+    ];
+    if cfg.flag("tile_translucent") {
+        classes.push(String::from("tiles-glass"));
+    }
+    if cfg.number("search_opacity") < 100 {
+        classes.push(String::from("search-glass"));
+    }
+    for name in [
+        "logo",
+        "clock",
+        "date",
+        "greeting",
+        "search",
+        "shortcuts",
+        "most_visited",
+        "notes",
+    ] {
+        if !cfg.flag(&format!("show_{name}")) {
+            classes.push(format!("hide-{name}"));
         }
     }
-
+    let text_color = cfg.get("text_color");
+    if !text_color.is_empty() {
+        classes.push(String::from("has-text-color"));
+    }
+    let mut style = format!(
+        "--nt-tile:{}px;--nt-cols:{};--nt-radius:{}px;--nt-scale:{};--nt-search-alpha:{}%;",
+        cfg.number("tile_size"),
+        cfg.number("tile_columns"),
+        cfg.number("tile_radius"),
+        cfg.number("font_scale") as f64 / 100.0,
+        cfg.number("search_opacity"),
+    );
+    if !text_color.is_empty() {
+        style.push_str(&format!("--nt-text:{text_color};"));
+    }
     format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="color-scheme" content="light dark">
-<title>New Tab</title>
-<style>
-{SHARED_INTERNAL_CSS}
-.newtab-wrap {{
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 72px 24px 48px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}}
-.top-bar {{
-  width: 100%;
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 36px;
-}}
-.brand {{
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 28px;
-}}
-.brand-logo {{
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #f97316, #ef4444);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-weight: 700;
-  font-size: 22px;
-  box-shadow: var(--shadow);
-}}
-.brand h1 {{
-  font-size: 32px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}}
-.search-form {{
-  width: 100%;
-  max-width: 580px;
-  margin-bottom: 42px;
-  position: relative;
-}}
-.search-input {{
-  width: 100%;
-  height: 48px;
-  padding: 0 48px 0 20px;
-  border-radius: 24px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  font-size: 15px;
-  box-shadow: var(--shadow);
-  outline: none;
-  transition: border-color 0.15s;
-}}
-.search-input:focus {{
-  border-color: var(--accent);
-}}
-.section-label {{
-  width: 100%;
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  margin-bottom: 14px;
-}}
-.tiles-grid {{
-  width: 100%;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(165px, 1fr));
-  gap: 14px;
-}}
-.tile-card {{
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 16px;
-  border-radius: 14px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  cursor: pointer;
-  transition: transform 0.12s, background 0.15s;
-}}
-.tile-card:hover {{
-  background: var(--surface-hover);
-  transform: translateY(-2px);
-}}
-.tile-icon {{
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  background: var(--surface-hover);
-  color: var(--accent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 16px;
-}}
-.tile-title {{
-  font-size: 13.5px;
-  font-weight: 600;
-  width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}}
-.tile-meta {{
-  font-size: 11.5px;
-  color: var(--muted);
-  width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}}
-</style>
-</head>
-<body>
-<div class="newtab-wrap">
-  <div class="top-bar">
-    <div class="nav-links">
-      <button class="pill-btn" onclick="go('ember://bookmarks')">&#9733; Bookmarks</button>
-      <button class="pill-btn" onclick="go('ember://history')">History</button>
-    </div>
-  </div>
-  <div class="brand">
-    <div class="brand-logo">E</div>
-    <h1>Ember</h1>
-  </div>
-  <form class="search-form" id="search-form">
-    <input class="search-input" id="search-input" type="text" placeholder="Search Google or type a URL" autocomplete="off" autofocus />
-  </form>
-  <div class="section-label">Most Visited</div>
-  <div class="tiles-grid">
-    {tiles_html}
-  </div>
-</div>
-<script>
-{ipc_js}
-function go(target) {{
-  emberSend('navigate:' + target);
-}}
-document.getElementById('search-form').addEventListener('submit', function(e) {{
-  e.preventDefault();
-  var val = document.getElementById('search-input').value.trim();
-  if (val) {{
-    go(val);
-  }}
-}});
-</script>
-</body>
-</html>"#
+        r#"class="{}" style="{}""#,
+        escape_html(&classes.join(" ")),
+        escape_html(&style)
     )
 }
 
-fn render_tile(title: &str, url: &str, visits: Option<i64>) -> String {
-    let host = extract_display_host(url);
-    let initial = host.chars().next().unwrap_or('W').to_ascii_uppercase();
-    let meta = match visits {
-        Some(v) if v > 1 => format!("{} &middot; {} visits", escape_html(&host), v),
-        _ => escape_html(&host),
-    };
-    let url_attr = escape_html(url);
+fn render_newtab_tile(title: &str, url: &str) -> String {
+    let host = newtab_icon_host(url);
     format!(
-        r#"<div class="tile-card" data-url="{url_attr}" onclick="go(this.dataset.url)">
-  <div class="tile-icon">{initial}</div>
-  <div class="tile-title">{title}</div>
-  <div class="tile-meta">{meta}</div>
-</div>"#,
+        r#"<button class="tile" data-url="{url}" title="{title}&#10;{url}"><span class="ti" style="--h:{hue}">{initial}</span><span class="tl">{title}</span></button>"#,
+        url = escape_html(url),
         title = escape_html(title),
+        hue = newtab_hue(&host),
+        initial = escape_html(&newtab_initial(&host)),
+    )
+}
+
+/// Appends `"<escaped>"` (a JS string literal safe inside `<script>`) to `out`.
+fn push_js_str(out: &mut String, s: &str) {
+    out.push('"');
+    out.push_str(&escape_js_script_string(s));
+    out.push('"');
+}
+
+/// Appends `{t:"..",u:".."}` items to `out`.
+fn push_js_links<'a>(out: &mut String, links: impl Iterator<Item = (&'a str, &'a str)>) {
+    for (i, (title, url)) in links.enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{t:");
+        push_js_str(out, title);
+        out.push_str(",u:");
+        push_js_str(out, url);
+        out.push('}');
+    }
+}
+
+/// Appends `"key":"value"` pairs for every new tab setting of `cfg` to `out`.
+fn push_js_values(out: &mut String, cfg: &crate::newtab::NewtabConfig) {
+    for (i, key) in crate::newtab::keys().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_js_str(out, key);
+        out.push(':');
+        push_js_str(out, cfg.get(key));
+    }
+}
+
+/// Fills `template` by replacing each marker (in document order) exactly once. Inserted values
+/// are never scanned for later markers, so user text cannot inject into another slot.
+fn fill_template_in_order(template: &str, parts: &[(&str, &str)]) -> String {
+    let extra: usize = parts.iter().map(|(_, v)| v.len()).sum();
+    let mut out = String::with_capacity(template.len() + extra);
+    let mut rest = template;
+    for (marker, value) in parts {
+        if let Some(pos) = rest.find(marker) {
+            out.push_str(&rest[..pos]);
+            out.push_str(value);
+            rest = &rest[pos + marker.len()..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn render_newtab_html(
+    most_visited: &[HistoryEntry],
+    cfg: &crate::newtab::NewtabConfig,
+    tok: &str,
+) -> String {
+    let mv: Vec<(&str, &str)> = if most_visited.is_empty() {
+        NEWTAB_DEFAULT_SITES.to_vec()
+    } else {
+        most_visited
+            .iter()
+            .map(|e| {
+                let title = if e.title.trim().is_empty() {
+                    e.url.as_str()
+                } else {
+                    e.title.as_str()
+                };
+                (title, e.url.as_str())
+            })
+            .collect()
+    };
+    let source = cfg.get("source");
+
+    // Shortcut grid (also rebuilt client-side by `renderTiles()` after edits).
+    let mut tiles = String::new();
+    let mut seen: Vec<&str> = Vec::new();
+    if source != "most_visited" {
+        for s in cfg.shortcuts() {
+            tiles.push_str(&render_newtab_tile(&s.title, &s.url));
+            seen.push(&s.url);
+        }
+    }
+    if source != "mine" {
+        for (title, url) in &mv {
+            if !seen.contains(url) {
+                tiles.push_str(&render_newtab_tile(title, url));
+            }
+        }
+    }
+    if source != "most_visited" && cfg.shortcuts().len() < crate::newtab::MAX_SHORTCUTS {
+        tiles.push_str(r#"<button class="tile tile-add" data-add="1" title="Add shortcut"><span class="ti">+</span><span class="tl">Add shortcut</span></button>"#);
+    }
+
+    // Most visited chips
+    let mut chips = String::new();
+    for (title, url) in &mv {
+        let host = newtab_icon_host(url);
+        chips.push_str(&format!(
+            r#"<button class="chip" data-url="{url}" title="{url}"><span class="ci" style="--h:{hue}">{initial}</span><span>{title}</span></button>"#,
+            url = escape_html(url),
+            title = escape_html(title),
+            hue = newtab_hue(&host),
+            initial = escape_html(&newtab_initial(&host)),
+        ));
+    }
+
+    // Data for the customize panel (all strings JS-escaped).
+    let mut data = String::from("var NT = { values: {");
+    push_js_values(&mut data, cfg);
+    data.push_str("}, defaults: {");
+    push_js_values(&mut data, &crate::newtab::NewtabConfig::default());
+    data.push_str("}, shortcuts: [");
+    push_js_links(
+        &mut data,
+        cfg.shortcuts()
+            .iter()
+            .map(|s| (s.title.as_str(), s.url.as_str())),
+    );
+    data.push_str("], mv: [");
+    push_js_links(&mut data, mv.iter().copied());
+    data.push_str(&format!("], max: {} }};", crate::newtab::MAX_SHORTCUTS));
+
+    // TODO(brand): replace the wordmark with `crate::brand::LOGO_SVG` once it exists.
+    let logo = r#"<span class="nt-mark" aria-hidden="true"></span><span>Ember</span>"#;
+
+    fill_template_in_order(
+        NEWTAB_PAGE_HTML,
+        &[
+            ("/*__SHARED_CSS__*/", SHARED_INTERNAL_CSS),
+            ("__BODY_ATTRS__", &newtab_body_attrs(cfg)),
+            ("<!--__LOGO__-->", logo),
+            ("<!--__TILES__-->", &tiles),
+            ("<!--__MV__-->", &chips),
+            ("<!--__NOTES__-->", &escape_html(cfg.get("notes"))),
+            ("/*__IPC_JS__*/", &ipc_send_js(tok)),
+            ("/*__DATA__*/", &data),
+        ],
     )
 }
 
@@ -1611,13 +1638,37 @@ mod tests {
         }]
     }
 
+    fn sample_newtab() -> crate::newtab::NewtabConfig {
+        let mut cfg = crate::newtab::NewtabConfig::default();
+        assert!(cfg.push_shortcut(
+            "</script><script>alert(1)</script>",
+            "https://c.test/?a=1&b='x'"
+        ));
+        assert!(!cfg.push_shortcut("bad", "javascript:alert(1)"));
+        cfg.set("greeting_name", "<img src=x onerror=alert(1)>");
+        cfg.set(
+            "notes",
+            "</textarea><script>alert(2)</script>
+/*__DATA__*/",
+        );
+        cfg.set("text_color", "#ffeeaa");
+        cfg.set("show_clock", "false");
+        cfg
+    }
+
     /// Renders every internal page with the test token.
     fn all_pages() -> Vec<(&'static str, String)> {
         let adblocker = Adblocker::new();
         #[allow(unused_mut)]
         let mut pages = vec![
-            ("newtab-empty", render_newtab_html(&[], TEST_TOK)),
-            ("newtab", render_newtab_html(&sample_history(), TEST_TOK)),
+            (
+                "newtab-empty",
+                render_newtab_html(&[], &crate::newtab::NewtabConfig::default(), TEST_TOK),
+            ),
+            (
+                "newtab",
+                render_newtab_html(&sample_history(), &sample_newtab(), TEST_TOK),
+            ),
             ("history", render_history_html(&sample_history(), TEST_TOK)),
             ("history-empty", render_history_html(&[], TEST_TOK)),
             (
@@ -1778,6 +1829,84 @@ mod tests {
         assert_eq!(
             escape_js_script_string("x\u{2028}y\u{2029}"),
             "x\\u2028y\\u2029"
+        );
+    }
+
+    /// The `<body ...>` opening tag of a rendered page.
+    fn newtab_body_tag(html: &str) -> &str {
+        let start = html.find("<body ").unwrap_or(0);
+        let end = html[start..].find('>').map_or(html.len(), |e| start + e);
+        &html[start..end]
+    }
+
+    #[test]
+    fn test_newtab_escapes_user_values() {
+        let html = render_newtab_html(&sample_history(), &sample_newtab(), TEST_TOK);
+        // Shortcut title: escaped in HTML, JS-escaped in the data block.
+        assert!(!html.contains("<script>alert(1)"));
+        assert!(html.contains("&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(html.contains(r"\x3C/script\x3E\x3Cscript\x3Ealert(1)"));
+        assert!(html.contains(r#"data-url="https://c.test/?a=1&amp;b=&#39;x&#39;""#));
+        // History entry from `sample_history` (most visited source is on by default).
+        assert!(!html.contains("<img src=x"));
+        // Notes: cannot close the textarea, and marker text is not substituted.
+        assert!(!html.contains("</textarea><script>"));
+        assert!(html.contains("&lt;/textarea&gt;&lt;script&gt;alert(2)"));
+        assert_eq!(html.matches("var NT = {").count(), 1);
+        assert!(html.contains("/*__DATA__*/</textarea>"));
+        // Config drives body classes/vars.
+        let body = newtab_body_tag(&html);
+        assert!(body.contains("hide-clock"));
+        assert!(body.contains("--nt-text:#ffeeaa;"));
+        assert!(body.contains("has-text-color"));
+        // Logo slot and customize button are present; no placeholders left behind.
+        assert!(html.contains(r#"id="ember-logo""#));
+        assert!(html.contains(r#"id="nt-fab""#));
+        for marker in [
+            "__BODY_ATTRS__",
+            "<!--__TILES__-->",
+            "/*__IPC_JS__*/",
+            "/*__SHARED_CSS__*/",
+        ] {
+            assert!(!html.contains(marker), "{marker} left in page");
+        }
+    }
+
+    #[test]
+    fn test_newtab_source_and_toggles() {
+        let mut cfg = crate::newtab::NewtabConfig::default();
+        cfg.push_shortcut("Mine", "https://mine.test");
+        cfg.set("source", "mine");
+        let html = render_newtab_html(&sample_history(), &cfg, TEST_TOK);
+        let grid_start = html.find(r#"id="nt-tiles">"#).unwrap_or(0);
+        let grid_end = html[grid_start..].find("</div>").unwrap_or(0) + grid_start;
+        let grid = &html[grid_start..grid_end];
+        assert!(grid.contains("https://mine.test"));
+        assert!(!grid.contains("a.test"));
+        assert!(grid.contains("tile-add"));
+        cfg.set("source", "most_visited");
+        let html = render_newtab_html(&[], &cfg, TEST_TOK);
+        assert!(html.contains("https://www.rust-lang.org"));
+        assert!(!html.contains(r#"data-add="1""#));
+        assert!(!newtab_body_tag(&html).contains("hide-logo"));
+        cfg.set("show_logo", "false");
+        cfg.set("layout", "top");
+        let html = render_newtab_html(&[], &cfg, TEST_TOK);
+        let body = newtab_body_tag(&html);
+        assert!(body.contains("hide-logo"));
+        assert!(body.contains("layout-top"));
+    }
+
+    #[test]
+    fn test_newtab_hue_matches_js_algorithm() {
+        // h = (h * 31 + code) >>> 0, then % 360 (see newtab_page.html).
+        assert_eq!(newtab_hue(""), 0);
+        assert_eq!(newtab_hue("a"), 97);
+        assert_eq!(newtab_hue("ab"), (97 * 31 + 98) % 360);
+        assert_eq!(newtab_initial("éx"), "É");
+        assert_eq!(
+            newtab_icon_host("https://user@www.Example.com/x"),
+            "Example.com"
         );
     }
 }

@@ -728,6 +728,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     };
     if let Some(config_dir) = settings.config_path().parent() {
         crate::theme::init(config_dir);
+        crate::newtab::init(config_dir);
     }
     let init_settings = settings.get();
     let adblocker = Adblocker::with_filters_dir(
@@ -2721,6 +2722,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                                 }
                                 apply_custom_theme_to_chrome(&chrome_webview);
                                 apply_custom_theme_to_tab(&tabs, tab_id);
+                            }
+                            PageIpcEvent::NewtabSave(payload) => {
+                                // The page already shows the change; just persist it.
+                                let config = crate::newtab::parse_payload(&payload);
+                                if let Err(err) = crate::newtab::save(config) {
+                                    eprintln!("[ember][newtab] failed to save new tab config: {err}");
+                                }
                             }
                             PageIpcEvent::ThemeRevert => {
                                 crate::theme::reload_saved();

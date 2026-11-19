@@ -6,6 +6,7 @@ pub mod brand;
 pub mod context_menu;
 pub mod downloads;
 pub mod find;
+pub mod newtab;
 pub mod pages;
 pub mod permissions;
 pub mod popup;

@@ -568,6 +568,8 @@ pub enum PageIpcEvent {
     ThemeSave(String),
     /// `ember://themes`: discard an unsaved preview and restore the saved theme.
     ThemeRevert,
+    /// `ember://newtab`: persist the new tab page configuration (`newtab.txt` line format).
+    NewtabSave(String),
     ShortcutNewTab,
     ShortcutCloseTab,
     ShortcutReopenClosedTab,
@@ -674,6 +676,7 @@ pub fn is_privileged_page_event(event: &PageIpcEvent) -> bool {
             | PageIpcEvent::ThemePreview(_)
             | PageIpcEvent::ThemeSave(_)
             | PageIpcEvent::ThemeRevert
+            | PageIpcEvent::NewtabSave(_)
     )
 }
 
@@ -886,6 +889,8 @@ fn parse_page_ipc_body(raw: &str) -> Option<PageIpcEvent> {
                 Some(PageIpcEvent::ThemeSave(payload.to_owned()))
             } else if trimmed == "theme_revert" {
                 Some(PageIpcEvent::ThemeRevert)
+            } else if let Some(payload) = trimmed.strip_prefix("newtab_save:") {
+                Some(PageIpcEvent::NewtabSave(payload.to_owned()))
             } else if let Some(target) = trimmed.strip_prefix("https_proceed:") {
                 Some(PageIpcEvent::HttpsProceed(target.trim().to_owned()))
             } else if let Some(url) = trimmed.strip_prefix("cosmetic_init:") {
@@ -2407,6 +2412,53 @@ accent=#ff0000"
                 tok,
                 Some("https://evil.example"),
                 "https://evil.example"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn newtab_ipc_is_privileged() {
+        let body = "newtab_save:layout=top\nshortcut=https://a.test\tA";
+        assert!(is_privileged_page_event(&PageIpcEvent::NewtabSave(
+            String::new()
+        )));
+        // Untrusted web content can never send it.
+        assert_eq!(parse_page_ipc_event(body), None);
+        let tok = internal_ipc_token();
+        let raw = format!("{INTERNAL_IPC_PREFIX}{tok}:{body}");
+        let expected = Some(PageIpcEvent::NewtabSave(String::from(
+            "layout=top\nshortcut=https://a.test\tA",
+        )));
+        assert_eq!(
+            parse_page_ipc_event_checked(&raw, tok, Some("ember://newtab"), "about:blank"),
+            expected
+        );
+        // Wrong token, missing token, web tab or web source URI: rejected.
+        let bad_tok = format!("{INTERNAL_IPC_PREFIX}deadbeef:{body}");
+        assert_eq!(
+            parse_page_ipc_event_checked(&bad_tok, tok, Some("ember://newtab"), "about:blank"),
+            None
+        );
+        assert_eq!(
+            parse_page_ipc_event_checked(body, tok, Some("ember://newtab"), "about:blank"),
+            None
+        );
+        assert_eq!(
+            parse_page_ipc_event_checked(
+                &raw,
+                tok,
+                Some("https://evil.example"),
+                "https://evil.example"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_page_ipc_event_checked(
+                &raw,
+                tok,
+                Some("ember://newtab"),
+                "https://evil.example/frame"
             ),
             None
         );
