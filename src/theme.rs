@@ -617,8 +617,9 @@ impl CustomTheme {
             _ => None,
         };
         let mut out = format!(
-            "{{\"active\":{active},\"focus_only\":{},\"reduced\":{reduced},\"video\":",
-            self.get("animate_focus_only") != Some("false")
+            "{{\"active\":{active},\"focus_only\":{},\"reduced\":{reduced},\"chrome_h\":{},\"video\":",
+            self.get("animate_focus_only") != Some("false"),
+            crate::ui::CHROME_HEIGHT
         );
         push_json_opt(&mut out, video);
         out.push_str(",\"particles\":");

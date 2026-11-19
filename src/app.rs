@@ -968,6 +968,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
     // Host state for the animated wallpaper runtime (paused when unfocused / minimized).
     let mut window_focused = true;
+    store_window_logical_height(&window);
     let mut window_minimized = false;
     // "Clear cookies and site data when Ember closes": the data is cleared at exit (see
     // `exit_requested` below). If that did not finish last time (crash, kill, timeout), the
@@ -1314,8 +1315,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 collapse_overlay_from_host(&mut overlay_controller, "window_resize", &chrome_webview, &window);
                 if window.is_minimized() != window_minimized {
                     window_minimized = !window_minimized;
-                    signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
                 }
+                if !window_minimized {
+                    store_window_logical_height(&window);
+                }
+                signal_wallpaper_host(&chrome_webview, &tabs, window_focused, window_minimized);
                 let (chrome_bounds, content_bounds) =
                     ui::compute_layout_bounds(physical_size, window.scale_factor());
                 current_content_bounds = content_bounds;
@@ -1413,6 +1417,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                             }
                             UiCommand::UiReady => {
                                 ui_ready_received = true;
+                                signal_wallpaper_host(
+                                    &chrome_webview,
+                                    &tabs,
+                                    window_focused,
+                                    window_minimized,
+                                );
                                 if selftest_mode {
                                     selftest_active = true;
                                     selftest_saw_popup_open = false;
@@ -3638,6 +3648,21 @@ fn push_wallpaper_call(script: &mut String, config_json: &str) {
     script.push_str(");}");
 }
 
+/// Logical height of the whole window client area (toolbar + page), used to lay the video
+/// wallpaper out as one seamless frame. Stored by the event loop on every resize.
+fn window_logical_height() -> f64 {
+    f64::from_bits(WINDOW_LOGICAL_HEIGHT.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+static WINDOW_LOGICAL_HEIGHT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn store_window_logical_height(window: &Window) {
+    let scale = window.scale_factor();
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    let h = (f64::from(window.inner_size().height) / scale).round();
+    WINDOW_LOGICAL_HEIGHT.store(h.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Tells the chrome (and the active tab when it is an internal page) whether the window is
 /// focused / minimized, so animated wallpapers, videos and particles pause.
 fn signal_wallpaper_host(
@@ -3646,8 +3671,9 @@ fn signal_wallpaper_host(
     focused: bool,
     minimized: bool,
 ) {
+    let win_h = window_logical_height();
     let script = format!(
-        "if(typeof window.__emberWallpaperHost==='function'){{window.__emberWallpaperHost({{focused:{focused},minimized:{minimized}}});}}"
+        "if(typeof window.__emberWallpaperHost==='function'){{window.__emberWallpaperHost({{focused:{focused},minimized:{minimized},winH:{win_h}}});}}"
     );
     let _ = chrome_webview.evaluate_script(&script);
     if let Some(webview) = tabs

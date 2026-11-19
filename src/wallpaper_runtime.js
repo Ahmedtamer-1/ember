@@ -5,7 +5,9 @@
   if (window.__emberSetWallpaper) return;
   var doc = document, root = doc.documentElement;
   var cfg = { active: false };
-  var host = { focused: true, minimized: false };
+  var host = { focused: true, minimized: false, winH: 0 };
+  var syncTimer = 0;
+  var isChrome = !!doc.querySelector(".chrome-shell");
   var layer = null, video = null, canvas = null, ctx = null;
   var listening = false, running = false, raf = 0, lastFrame = 0;
   // Particles: 6 floats each (x, y, vx, vy, size, phase), allocated only when the kind/count changes.
@@ -57,9 +59,41 @@
       video.setAttribute("playsinline", "");
       video.setAttribute("disablepictureinpicture", "");
       video.setAttribute("aria-hidden", "true");
+      video.addEventListener("loadedmetadata", function () { layoutVideo(); syncVideo(); });
+      video.addEventListener("playing", syncVideo);
       l.appendChild(video);
     }
     if (video.getAttribute("src") !== url) video.setAttribute("src", url);
+    layoutVideo();
+  }
+
+  // Seamless video: the toolbar and every internal page lay the video out as one frame the
+  // size of the whole window (toolbar + page). The toolbar shows its top strip, pages show the
+  // rest shifted up by the toolbar height, so the picture continues across the boundary.
+  function layoutVideo() {
+    if (!video || !layer) return;
+    var chromeH = +cfg.chrome_h || 84;
+    var w = window.innerWidth || 1;
+    var h = isChrome ? (host.winH > chromeH ? host.winH : window.innerHeight) : window.innerHeight + chromeH;
+    var r = layer.getBoundingClientRect();
+    var s = video.style;
+    s.left = (-r.left) + "px";
+    s.top = (-r.top - (isChrome ? 0 : chromeH)) + "px";
+    s.width = w + "px";
+    s.height = h + "px";
+    s.right = "auto";
+    s.bottom = "auto";
+  }
+
+  // Both copies (toolbar + page) follow the same wall clock, so they stay in step without
+  // talking to each other. Only seeks when drift exceeds a quarter second.
+  function syncVideo() {
+    if (!video || !(video.duration > 0.5) || !isFinite(video.duration)) return;
+    var target = (Date.now() / 1000) % video.duration;
+    var d = Math.abs(video.currentTime - target);
+    if (d > 0.25 && d < video.duration - 0.25) {
+      try { video.currentTime = target; } catch (e) {}
+    }
   }
 
   function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -209,11 +243,17 @@
     root.style.setProperty("--ember-wp-play", run ? "running" : "paused");
     if (video) {
       if (run) {
+        syncVideo();
         var p = video.play();
         if (p && p.catch) p.catch(function () {});
+        if (!syncTimer) syncTimer = setInterval(syncVideo, 4000);
       } else {
         video.pause();
       }
+    }
+    if ((!run || !video) && syncTimer) {
+      clearInterval(syncTimer);
+      syncTimer = 0;
     }
     if (run && P) {
       if (!running) {
@@ -239,7 +279,7 @@
     if (window.MutationObserver) {
       new MutationObserver(update).observe(root, { attributes: true, attributeFilter: ["data-reduced-motion"] });
     }
-    window.addEventListener("resize", function () { if (P) resize(); });
+    window.addEventListener("resize", function () { if (P) resize(); layoutVideo(); });
   }
 
   window.__emberSetWallpaper = function (c) {
@@ -253,6 +293,8 @@
   window.__emberWallpaperHost = function (h) {
     if (h && typeof h.focused === "boolean") host.focused = h.focused;
     if (h && typeof h.minimized === "boolean") host.minimized = h.minimized;
+    if (h && typeof h.winH === "number" && h.winH > 0) host.winH = h.winH;
+    layoutVideo();
     if (cfg.active) update();
   };
   if (window.__emberWallpaperInit) window.__emberSetWallpaper(window.__emberWallpaperInit);
